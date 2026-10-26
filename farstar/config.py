@@ -1,4 +1,5 @@
 from pathlib import Path
+from urllib.parse import urlparse
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -8,6 +9,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
     app_name: str = "Farstar"
     bot_token: str = ""
+    bot_username: str = ""
     admin_ids: list[int] = Field(default_factory=list)
     admin_username: str = "admin"
     admin_password: str = ""
@@ -16,6 +18,8 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8080
     public_url: str = "http://localhost:8080"
+    mini_app_url: str = ""
+    admin_mini_app_url: str = ""
     cookie_secure: bool = False
     demo: bool = False
     currency: str = "XTR"
@@ -39,6 +43,15 @@ class Settings(BaseSettings):
         if value not in {"XTR", "IRT"}:
             raise ValueError("CURRENCY must be XTR or IRT")
         return value
+
+    @field_validator('mini_app_url', 'admin_mini_app_url')
+    @classmethod
+    def mini_url_valid(cls, value):
+        if value:
+            parsed = urlparse(value)
+            if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.fragment or parsed.query:
+                raise ValueError('Mini App URLs must use HTTPS without credentials, query or fragment')
+        return value.rstrip('/')
 
     @model_validator(mode="after")
     def validate_secrets(self):

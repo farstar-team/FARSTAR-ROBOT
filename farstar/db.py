@@ -94,6 +94,16 @@ CREATE TABLE IF NOT EXISTS outbox (
 CREATE TABLE IF NOT EXISTS sessions (
  token_hash TEXT PRIMARY KEY, csrf TEXT NOT NULL, expires_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS app_sessions (
+ token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
+ role TEXT NOT NULL CHECK(role IN ('customer','admin')), csrf TEXT NOT NULL,
+ expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS upload_requests (
+ user_id INTEGER NOT NULL REFERENCES users(id), request_id TEXT NOT NULL,
+ receipt_id TEXT REFERENCES receipts(id), lease_until INTEGER NOT NULL,
+ PRIMARY KEY(user_id,request_id)
+);
 CREATE TABLE IF NOT EXISTS audit (
  id INTEGER PRIMARY KEY, actor TEXT NOT NULL, action TEXT NOT NULL,
  entity TEXT NOT NULL, details TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL

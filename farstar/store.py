@@ -58,6 +58,10 @@ class Store:
                 saved = con.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
                 if saved:
                     setattr(settings, key, saved['value'])
+            for key in ('trial_enabled','trial_gb','trial_hours','referral_percent'):
+                saved = con.execute('SELECT value FROM meta WHERE key=?', ('shop:' + key,)).fetchone()
+                if saved:
+                    setattr(settings, key, json.loads(saved['value']))
 
     def save_payment_details(self, card_number, card_holder):
         with self.db.transaction() as con:
@@ -66,6 +70,22 @@ class Store:
             audit(con, "admin", "payment.details_save", "card")
         self.settings.card_number = card_number
         self.settings.card_holder = card_holder
+
+    def save_shop_settings(self, values, actor='admin'):
+        limits = {'trial_gb':(1,10),'trial_hours':(1,72),'referral_percent':(0,50)}
+        for key,value in values.items():
+            if key == 'trial_enabled':
+                valid = type(value) is bool
+            else:
+                valid = key in limits and type(value) is int and limits[key][0] <= value <= limits[key][1]
+            if not valid:
+                raise DomainError('مقدار تنظیم فروشگاه معتبر نیست.')
+        with self.db.transaction() as con:
+            for key,value in values.items():
+                con.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', ('shop:' + key,json.dumps(value)))
+            audit(con,actor,'shop.settings','shop',values)
+        for key,value in values.items():
+            setattr(self.settings,key,value)
 
     def admins(self, con, body, key):
         for admin_id in self.settings.admin_ids:
@@ -138,6 +158,11 @@ class Store:
 
     def save_plan(self, data, plan_id=None):
         values = dict(data)
+        for key, upper in [('days', 1095), ('volume_gb', 100000), ('price', 100000000)]:
+            if type(values.get(key)) is not int or not 1 <= values[key] <= upper:
+                raise DomainError('حجم، مدت یا قیمت پلن معتبر نیست.')
+        if not 2 <= len(values.get('name', '')) <= 80 or not 0 <= values.get('ip_limit', 2) <= 100:
+            raise DomainError('نام پلن یا محدودیت IP معتبر نیست.')
         with self.db.transaction() as con:
             if not con.execute("SELECT 1 FROM servers WHERE id=?", (values["server_id"],)).fetchone():
                 raise DomainError("ابتدا یک سرور اضافه کنید.")
@@ -152,6 +177,23 @@ class Store:
                                       ",".join("?" for _ in values) + ")", tuple(values.values())).lastrowid
             audit(con, "admin", "plan.save", plan_id)
         return plan_id
+
+    def create_code(self, kind, code, value, max_uses, expires_at, actor='admin'):
+        import re
+        code = code.upper().strip()
+        if not re.fullmatch(r'[A-Z0-9_-]{3,32}', code) or not 1 <= max_uses <= 100000 or expires_at <= now():
+            raise DomainError('کد، تعداد استفاده یا تاریخ انقضا معتبر نیست.')
+        if not 1 <= value <= (100 if kind == 'coupon' else 100000000):
+            raise DomainError('مقدار کد معتبر نیست.')
+        with self.db.transaction() as con:
+            if kind == 'coupon':
+                con.execute('INSERT INTO coupons(code,percent,max_uses,expires_at) VALUES (?,?,?,?)',
+                            (code, value, max_uses, expires_at))
+            elif kind == 'gift':
+                con.execute('INSERT INTO gifts VALUES (?,?,?,?)', (code, value, max_uses, expires_at))
+            else:
+                raise DomainError('نوع کد معتبر نیست.')
+            audit(con, actor, 'code.create', code)
 
     def create_order(self, user_id, plan_id=None, coupon="", service_id=None, trial=False):
         timestamp = now()

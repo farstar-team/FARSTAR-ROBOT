@@ -37,3 +37,4 @@ typing_extensions==4.16.0
 tzdata==2026.5
 uvicorn==0.54.0
 yarl==1.25.1
+python-multipart==0.0.32

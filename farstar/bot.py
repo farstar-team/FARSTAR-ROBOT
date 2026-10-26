@@ -10,20 +10,15 @@ from aiogram import BaseMiddleware, Dispatcher, F, Router
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import (
     BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup,
-    ErrorEvent, KeyboardButton, LabeledPrice, LinkPreviewOptions, Message, PreCheckoutQuery, ReplyKeyboardMarkup,
+    ErrorEvent, LabeledPrice, LinkPreviewOptions, Message, PreCheckoutQuery, ReplyKeyboardRemove, WebAppInfo,
 )
 
 from .panel import PanelError
+from .admin_bot import AdminBot
+from .happ import device_keyboard, send_guide
 from .security import rate_limit
 from .services import GIB, subscription
 from .store import DomainError, now
-
-MENU = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="🛍 خرید سرویس"), KeyboardButton(text="📡 سرویس‌های من")],
-    [KeyboardButton(text="💰 کیف پول"), KeyboardButton(text="🧪 تست رایگان")],
-    [KeyboardButton(text="🎁 دعوت دوستان"), KeyboardButton(text="🧾 سفارش‌های من")],
-    [KeyboardButton(text="💬 پشتیبانی"), KeyboardButton(text="📚 راهنمای اتصال")],
-], resize_keyboard=True, input_field_placeholder="چه کاری برات انجام بدم؟")
 
 TERMS = (
     "📃 <b>قوانین خرید</b>\n\n"
@@ -52,7 +47,27 @@ def build_dispatcher(store, provisioner, bot):
     def money(amount):
         return f"{amount:,} {'⭐ استار' if settings.currency == 'XTR' else 'تومان'}"
 
+    def menu(user_id):
+        rows = [[('🛍 خرید اشتراک', 'menu:buy'), ('📡 سرویس‌های من', 'menu:services')],
+                [('💳 کیف پول و پرداخت', 'menu:wallet'), ('📱 آموزش Happ', 'menu:help')],
+                [('🎁 دعوت دوستان', 'menu:referrals'), ('🧾 سفارش‌های من', 'menu:orders')],
+                [('💬 پشتیبانی', 'menu:support'), ('📃 قوانین', 'menu:terms')]]
+        if settings.trial_enabled:
+            rows.insert(2, [('🧪 دریافت تست رایگان', 'menu:trial')])
+        result = keyboard(rows)
+        if settings.mini_app_url:
+            result.inline_keyboard.insert(0, [InlineKeyboardButton(text='✦ فروشگاه من · مینی‌اپ',
+                                                web_app=WebAppInfo(url=settings.mini_app_url))])
+        if user_id in settings.admin_ids:
+            result.inline_keyboard.append([InlineKeyboardButton(text='⚙️ مدیریت ربات', callback_data='adm:home')])
+            if settings.admin_mini_app_url:
+                result.inline_keyboard.append([InlineKeyboardButton(text='🧩 مینی‌اپ مدیر',
+                                                web_app=WebAppInfo(url=settings.admin_mini_app_url))])
+        return result
+
     async def send(chat_id, text, reply_markup=None):
+        if reply_markup is None:
+            reply_markup = keyboard([[('⌂ منوی اصلی', 'menu:home')]])
         return await bot.send_message(chat_id, text, reply_markup=reply_markup,
                                       link_preview_options=LinkPreviewOptions(is_disabled=True))
 
@@ -79,13 +94,14 @@ def build_dispatcher(store, provisioner, bot):
                 (event.text or "").split(" ")[0] in {"/support", "/paysupport", "/terms"}
                 or event.text == "💬 پشتیبانی" or user["state"] == "ticket")) or (
                 isinstance(event, CallbackQuery) and (event.data or "").startswith("ticket:"))
+            support_action = support_action or (isinstance(event, CallbackQuery) and event.data in {'menu:support', 'menu:terms'})
             if user["banned"] and not support_action:
                 if isinstance(event, CallbackQuery):
                     await event.answer("حساب شما مسدود است.", show_alert=True)
                 else:
                     await send(actor.id, "حساب شما مسدود است؛ برای پیگیری /support را بزنید.")
                 return
-            if not rate_limit(db, f"bot:{actor.id}", 25, 60):
+            if not rate_limit(db, f"bot:{actor.id}", 120 if actor.id in settings.admin_ids else 35, 60):
                 if isinstance(event, CallbackQuery):
                     await event.answer("کمی صبر کنید و دوباره امتحان کنید.")
                 return
@@ -112,7 +128,12 @@ def build_dispatcher(store, provisioner, bot):
 
     async def home(user_id):
         store.set_state(user_id)
-        await send(user_id, f"✦ <b>{escape(settings.app_name)}</b>\n\nبه فروشگاه خوش آمدی.\nسرویست رو انتخاب کن؛ اتصال با ما 🚀", MENU)
+        migrated = db.one('SELECT 1 FROM meta WHERE key=?', (f'inline-menu:{user_id}',))
+        if not migrated:
+            await send(user_id, '✦ منوی جدید Farstar آماده است.', ReplyKeyboardRemove())
+            with db.transaction() as con:
+                con.execute('INSERT OR IGNORE INTO meta VALUES (?,?)', (f'inline-menu:{user_id}', '1'))
+        await send(user_id, f"✦ <b>{escape(settings.app_name)}</b>\n\nاشتراکت، پرداختت و پشتیبانی؛ همه همین‌جاست.\nاز دکمه‌های زیر انتخاب کن.", menu(user_id))
         if not store.user(user_id)["terms_at"]:
             await send(user_id, terms, keyboard([[('قوانین را خواندم و می‌پذیرم ✓', 'terms:accept')]]))
 
@@ -203,6 +224,22 @@ def build_dispatcher(store, provisioner, bot):
         keys = [[("✍️ تیکت تازه", "ticket:new")]] + [[(f"#{t['id']} · {t['subject'][:40]}", f"ticket:{t['id']}")] for t in tickets]
         await send(user_id, "💬 <b>پشتیبانی</b>\nمشکل اتصال یا پرداختت را اینجا بنویس؛ پاسخ در همین ربات می‌رسد.", keyboard(keys))
 
+    async def referrals(user_id):
+        me = await bot.get_me()
+        count = db.one('SELECT COUNT(*) n FROM users WHERE referrer_id=?', (user_id,))['n']
+        await send(user_id, f"🎁 <b>دعوت دوستان</b>\n{settings.referral_percent}٪ اولین خرید هر دوست به کیف پولت برمی‌گردد.\n"
+                   f"دعوت‌شده‌ها: {count}\n\nhttps://t.me/{me.username}?start=ref_{user_id}")
+
+    async def orders(user_id):
+        rows = db.all('SELECT * FROM orders WHERE user_id=? ORDER BY created_at DESC LIMIT 10', (user_id,))
+        labels = {'pending':'منتظر پرداخت','checkout':'در حال پرداخت','paid':'در صف ساخت','processing':'در حال ساخت',
+                  'completed':'تحویل شد','failed':'بررسی پشتیبانی','expired':'منقضی','refunded':'بازپرداخت شد',
+                  'refund_pending':'در صف بازپرداخت','cancelled':'لغو شد'}
+        await send(user_id, '🧾 <b>سفارش‌های من</b>\n\n'+ ('\n'.join(
+            f"<code>{o['id']}</code> · {money(o['price'])} · {labels.get(o['status'],o['status'])}" for o in rows) or 'هنوز سفارشی نداری.'))
+
+    admin = AdminBot(store, provisioner, bot, send)
+
     @router.pre_checkout_query()
     async def precheckout(query: PreCheckoutQuery):
         try:
@@ -233,7 +270,36 @@ def build_dispatcher(store, provisioner, bot):
             await query.answer()
             parts = data.split(":")
             action = parts[0]
-            if action == "terms":
+            if action == 'adm':
+                await admin.callback(query)
+            elif action == 'guide':
+                await send_guide(bot, store, user_id, parts[1])
+            elif action == 'menu':
+                store.set_state(user_id)
+                selected = parts[1]
+                if selected == 'home':
+                    await home(user_id)
+                elif selected == 'buy':
+                    await show_plans(user_id)
+                elif selected == 'services':
+                    await show_services(user_id)
+                elif selected == 'wallet':
+                    await show_wallet(user_id)
+                elif selected == 'help':
+                    await send(user_id, '📱 <b>راهنمای Happ</b>\nدستگاهت را انتخاب کن؛ لینک رسمی دانلود و GIF آموزش مخصوص همان دستگاه را می‌فرستم.', device_keyboard())
+                elif selected == 'support':
+                    await support(user_id)
+                elif selected == 'terms':
+                    await send(user_id, terms, keyboard([[('قوانین را می‌پذیرم ✓', 'terms:accept')]]))
+                elif selected == 'trial':
+                    await show_order(store.create_order(user_id, trial=True))
+                elif selected == 'referrals':
+                    await referrals(user_id)
+                elif selected == 'orders':
+                    await orders(user_id)
+                else:
+                    raise DomainError('دکمه معتبر نیست.')
+            elif action == "terms":
                 store.accept_terms(user_id)
                 await home(user_id)
             elif action == "joined":
@@ -346,15 +412,14 @@ def build_dispatcher(store, provisioner, bot):
                 return
             if user_id in settings.admin_ids:
                 if command == "/admin":
-                    stats = store.stats()
-                    await send(user_id, f"⚙️ مدیریت\nکاربران: {stats['users']}\nسرویس فعال: {stats['active_services']}\n"
-                               f"درآمد: {money(stats['revenue'])}\nرسید باز: {stats['pending_receipts']}\nتیکت باز: {stats['open_tickets']}\n\n"
-                               "/reply شماره‌تیکت متن‌پاسخ\n/receipt شماره‌رسید\nپنل مدیریت در آدرس سرور ربات در دسترس است.")
+                    await admin.home(user_id)
                     return
                 if command == "/reply":
                     _, ticket_id, body = text.split(maxsplit=2)
                     store.ticket(user_id, body[:3000], int(ticket_id), admin=True)
                     await send(user_id, "پاسخ برای کاربر در صف ارسال قرار گرفت.")
+                    return
+                if await admin.message(message):
                     return
                 if command == "/receipt":
                     receipt_id = text.split(maxsplit=1)[1]
@@ -376,22 +441,11 @@ def build_dispatcher(store, provisioner, bot):
             elif text == "🧪 تست رایگان":
                 await show_order(store.create_order(user_id, trial=True))
             elif text == "🎁 دعوت دوستان":
-                me = await bot.get_me()
-                count = db.one("SELECT COUNT(*) n FROM users WHERE referrer_id=?", (user_id,))["n"]
-                await send(user_id, f"🎁 <b>با دوستات شریک شو</b>\n\n{settings.referral_percent}٪ اولین خرید هر دوست، پاداش کیف پول توست.\n"
-                           f"دعوت‌شده‌ها: {count}\n\nhttps://t.me/{me.username}?start=ref_{user_id}")
+                await referrals(user_id)
             elif text == "🧾 سفارش‌های من":
-                orders = db.all("SELECT * FROM orders WHERE user_id=? ORDER BY created_at DESC LIMIT 10", (user_id,))
-                labels = {"pending": "منتظر پرداخت", "checkout": "در حال پرداخت", "paid": "در صف ساخت", "processing": "در حال ساخت",
-                          "completed": "تحویل شد", "failed": "در بررسی پشتیبانی", "expired": "منقضی", "refunded": "بازپرداخت شد", "refund_pending": "در صف بازپرداخت", "cancelled": "لغو شد"}
-                await send(user_id, "🧾 <b>آخرین سفارش‌ها</b>\n\n" + ("\n".join(
-                    f"<code>{o['id']}</code> · {money(o['price'])} · {labels.get(o['status'], o['status'])}" for o in orders) or "هنوز سفارشی ثبت نشده."))
-            elif text == "📚 راهنمای اتصال":
-                await send(user_id, "📚 <b>اتصال در سه قدم</b>\n\n۱. اپ سازگار با پروتکل پلن را نصب کن.\n"
-                           "۲. در «سرویس‌های من» لینک اشتراک را کپی کن یا QR را اسکن کن.\n"
-                           "۳. در اپ گزینه افزودن اشتراک را بزن، اشتراک را بروزرسانی کن و متصل شو.\n\n"
-                           "Android: v2rayNG / Hiddify\niOS: Hiddify / Streisand\nWindows: v2rayN / Hiddify\n\n"
-                           "برای خطا، نام اپ و متن خطا را در پشتیبانی بنویس. لینک محرمانه‌ات را در گروه‌ها نفرست.")
+                await orders(user_id)
+            elif text == "📚 راهنمای اتصال" or command == '/help':
+                await send(user_id, 'دستگاهت را برای دریافت آموزش Happ انتخاب کن.', device_keyboard())
             else:
                 user = store.user(user_id)
                 state_data = json.loads(user["state_data"])
@@ -422,7 +476,7 @@ def build_dispatcher(store, provisioner, bot):
                 elif state == "receipt_photo":
                     await send(user_id, "لطفاً تصویر رسید را به صورت عکس بفرست؛ برای لغو /cancel.")
                 else:
-                    await send(user_id, "از دکمه‌های منو استفاده کن یا /start را بزن.", MENU)
+                    await send(user_id, "از دکمه‌های منو استفاده کن یا /start را بزن.", menu(user_id))
         except (DomainError, PanelError) as exc:
             await send(user_id, escape(str(exc)))
         except (ValueError, IndexError):

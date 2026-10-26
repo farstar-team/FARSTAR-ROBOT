@@ -1,0 +1,37 @@
+[Unit]
+Description=Farstar Telegram Mini Apps HTTPS gateway
+After=network-online.target farstar-robot.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=farstargw
+Group=farstargw
+EnvironmentFile=/etc/farstar-miniapp/gateway.env
+Environment=XDG_DATA_HOME=/var/lib/farstar-miniapp
+Environment=XDG_CONFIG_HOME=/var/lib/farstar-miniapp
+Environment=CREDENTIALS_DIRECTORY=/etc/farstar-miniapp/tls
+# Use a root-owned TLS copy, mode 0640, readable by the dedicated farstargw group.
+ExecStartPre=/opt/farstar-miniapp/caddy validate --config /etc/farstar-miniapp/Caddyfile --adapter caddyfile
+ExecStart=/opt/farstar-miniapp/caddy run --config /etc/farstar-miniapp/Caddyfile --adapter caddyfile
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/farstar-miniapp
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+Nice=15
+CPUQuota=20%
+MemoryHigh=64M
+MemoryMax=128M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

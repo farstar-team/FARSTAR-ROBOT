@@ -17,7 +17,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from starlette.background import BackgroundTask
 
 from .db import Database
+from . import __version__
 from .panel import PanelError
+from .miniapp import app_session, mount_miniapps
 from .security import digest, new_session, rate_limit
 from .services import Worker
 from .store import DomainError, Store, audit, now
@@ -101,6 +103,13 @@ class CardInput(Input):
         return digits
 
 
+class ShopInput(Input):
+    trial_enabled: bool
+    trial_gb: int = Field(ge=1,le=10)
+    trial_hours: int = Field(ge=1,le=72)
+    referral_percent: int = Field(ge=0,le=50)
+
+
 class CodeInput(Input):
     code: str = Field(pattern=r"^[A-Za-z0-9_-]{3,32}$")
     max_uses: int = Field(ge=1, le=100000)
@@ -132,7 +141,8 @@ def create_app(settings, run_background=True):
         try:
             while True:
                 try:
-                    await bot.get_me()
+                    identity = await bot.get_me()
+                    settings.bot_username = identity.username or ''
                     dispatcher = build_dispatcher(store, worker.provisioner, bot)
                     # Keep queued updates. Never silently remove an existing webhook.
                     webhook = await bot.get_webhook_info()
@@ -145,8 +155,22 @@ def create_app(settings, run_background=True):
                     from aiogram.types import BotCommand
                     await bot.set_my_commands([BotCommand(command=c, description=d) for c, d in [
                         ("start", "منوی اصلی"), ("services", "سرویس‌های من"), ("support", "پشتیبانی"),
-                        ("paysupport", "پشتیبانی پرداخت"), ("terms", "قوانین"), ("cancel", "لغو عملیات"),
+                        ("paysupport", "پشتیبانی پرداخت"), ("help", "آموزش Happ"), ("terms", "قوانین"), ("cancel", "لغو عملیات"),
                     ]])
+                    if settings.mini_app_url:
+                        from aiogram.types import MenuButtonWebApp, WebAppInfo, BotCommandScopeChat
+                        from aiogram.exceptions import TelegramAPIError
+                        await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text='فروشگاه من',web_app=WebAppInfo(url=settings.mini_app_url)))
+                        for admin_id in settings.admin_ids:
+                            try:
+                                await bot.set_my_commands([BotCommand(command='start',description='منوی مشتری'),
+                                    BotCommand(command='admin',description='مدیریت فروشگاه'),
+                                    BotCommand(command='help',description='آموزش Happ')],scope=BotCommandScopeChat(chat_id=admin_id))
+                                if settings.admin_mini_app_url:
+                                    await bot.set_chat_menu_button(chat_id=admin_id,menu_button=MenuButtonWebApp(
+                                        text='مدیریت',web_app=WebAppInfo(url=settings.admin_mini_app_url)))
+                            except TelegramAPIError:
+                                pass  # An administrator may not have started this bot yet.
                     await dispatcher.start_polling(bot, handle_signals=False, close_bot_session=False)
                 except asyncio.CancelledError:
                     raise
@@ -173,13 +197,14 @@ def create_app(settings, run_background=True):
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 
-    app = FastAPI(title="Farstar VPN", version="1.0.0", lifespan=lifespan,
+    app = FastAPI(title="Farstar VPN", version=__version__, lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store, app.state.worker = store, worker
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
-        if request.headers.get("content-length", "0").isdigit() and int(request.headers.get("content-length", "0")) > 65536:
+        maximum = 6 * 1024 * 1024 if request.url.path == '/mini-api/receipts' else 65536
+        if request.headers.get("content-length", "0").isdigit() and int(request.headers.get("content-length", "0")) > maximum:
             return JSONResponse({"detail": "درخواست بیش از حد بزرگ است."}, status_code=413)
         response = await call_next(request)
         response.headers.update({
@@ -187,6 +212,12 @@ def create_app(settings, run_background=True):
             "Referrer-Policy": "no-referrer", "Cache-Control": "no-store",
             "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'",
         })
+        if request.url.path in {'/app', '/admin-app'}:
+            del response.headers['X-Frame-Options']
+            response.headers['Content-Security-Policy'] = (
+                "default-src 'self'; script-src 'self' https://telegram.org; style-src 'self'; "
+                "img-src 'self' data: blob:; media-src 'self'; font-src 'self'; connect-src 'self'; "
+                "frame-ancestors 'self' https://web.telegram.org https://*.telegram.org; form-action 'self'; base-uri 'none'")
         return response
 
     @app.exception_handler(DomainError)
@@ -201,6 +232,8 @@ def create_app(settings, run_background=True):
     def authorize(request: Request):
         token = request.cookies.get("farstar_session", "")
         session = db.one("SELECT * FROM sessions WHERE token_hash=? AND expires_at>?", (digest(token), now()))
+        if not session:
+            session = app_session(db, settings, request, 'admin')
         if not session:
             raise HTTPException(401, "دوباره وارد حساب مدیریت شوید.")
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
@@ -219,7 +252,7 @@ def create_app(settings, run_background=True):
     @app.get("/health")
     def health():
         db.one("SELECT 1")
-        return {"status": "ok", "version": "1.0.0"}
+        return {"status": "ok", "version": __version__}
 
     @app.post("/api/auth/login")
     async def login(data: Login, request: Request, response: Response):
@@ -246,7 +279,10 @@ def create_app(settings, run_background=True):
     def logout(request: Request, response: Response, auth: Auth):
         with db.transaction() as con:
             con.execute("DELETE FROM sessions WHERE token_hash=?", (digest(request.cookies.get("farstar_session", "")),))
+            if auth.get('role') == 'admin':
+                con.execute('DELETE FROM app_sessions WHERE token_hash=?', (auth['token_hash'],))
         response.delete_cookie("farstar_session")
+        response.delete_cookie('farstar_admin')
         return {"ok": True}
 
     @app.get("/api/meta")
@@ -267,6 +303,15 @@ def create_app(settings, run_background=True):
     def payment_settings(auth: Auth):
         return {"currency": settings.currency, "manual_payments": settings.manual_payments,
                 "card_number": settings.card_number, "card_holder": settings.card_holder}
+
+    @app.get('/api/shop-settings')
+    def shop_settings(auth: Auth):
+        return {key:getattr(settings,key) for key in ['trial_enabled','trial_gb','trial_hours','referral_percent']}
+
+    @app.put('/api/shop-settings')
+    def shop_settings_update(data: ShopInput,auth: Auth):
+        store.save_shop_settings(data.model_dump(),auth.get('user_id','admin'))
+        return {'ok':True}
 
     @app.put("/api/payment-settings")
     def payment_settings_update(data: CardInput, auth: Auth):
@@ -475,5 +520,6 @@ def create_app(settings, run_background=True):
     def index():
         return FileResponse(STATIC / "index.html")
 
+    mount_miniapps(app, store, worker, STATIC)
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     return app

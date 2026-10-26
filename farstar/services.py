@@ -249,9 +249,16 @@ class Worker:
         if not self.bot:
             return
         from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
         for row in self.db.all("SELECT * FROM outbox WHERE sent_at IS NULL AND attempts<10 AND next_attempt<=? ORDER BY id LIMIT 25", (now(),)):
             try:
-                await self.bot.send_message(row["user_id"], row["body"], parse_mode="HTML")
+                buttons = [[InlineKeyboardButton(text='⌂ منوی اصلی',callback_data='menu:home')]]
+                if row['dedupe'].startswith('delivery:'):
+                    buttons.insert(0,[InlineKeyboardButton(text='📡 سرویس‌های من',callback_data='menu:services')])
+                if row['user_id'] in self.store.settings.admin_ids:
+                    buttons.insert(0,[InlineKeyboardButton(text='⚙️ مدیریت ربات',callback_data='adm:home')])
+                await self.bot.send_message(row["user_id"], row["body"], parse_mode="HTML",
+                                           reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
                 with self.db.transaction() as con:
                     con.execute("UPDATE outbox SET sent_at=? WHERE id=?", (now(), row["id"]))
                 await asyncio.sleep(0.06)
