@@ -160,10 +160,16 @@ def test_receipt_upload_is_idempotent_and_never_credits_automatically(settings):
     fake=SimpleNamespace(send_photo=AsyncMock(return_value=SimpleNamespace(photo=[SimpleNamespace(file_id='test-photo')])) )
     app.state.worker.bot=fake
     headers=auth(client)
+    server={'name':'Server','location':'test','url':'https://panel.example/base','inbound_id':7,
+            'subscription_url':'https://sub.example/sub','credentials':{'token':'test-token'}}
+    app.state.store.save_server(server)
+    plan=app.state.store.save_plan({'name':'Plan','server_id':1,'days':30,'volume_gb':20,'price':100000})
+    app.state.store.accept_terms(1)
+    order=app.state.store.create_order(1,plan)
     image=io.BytesIO()
     Image.new('RGB',(40,40),'white').save(image,'PNG')
     def send(amount='100000'):
-        return client.post('/mini-api/receipts',headers=headers,data={'amount':amount,'request_id':'same-request-id'},
+        return client.post('/mini-api/receipts',headers=headers,data={'amount':amount,'request_id':'same-request-id','order_id':order['id']},
                            files={'photo':('test.png',image.getvalue(),'image/png')})
     first=send()
     assert first.status_code==200,first.text
@@ -172,6 +178,7 @@ def test_receipt_upload_is_idempotent_and_never_credits_automatically(settings):
     assert app.state.store.user(1)['balance']==0
     assert send('200000').status_code==400
     assert app.state.store.db.one('SELECT COUNT(*) n FROM receipts')['n']==1
+    assert app.state.store.order(order['id'])['status']=='awaiting_review'
 
 
 def test_invalid_receipt_file_is_rejected_without_sending(settings):
@@ -182,7 +189,7 @@ def test_invalid_receipt_file_is_rejected_without_sending(settings):
     fake=SimpleNamespace(send_photo=AsyncMock())
     app.state.worker.bot=fake
     headers=auth(client)
-    result=client.post('/mini-api/receipts',headers=headers,data={'amount':'100000','request_id':'bad-image-request'},
+    result=client.post('/mini-api/receipts',headers=headers,data={'amount':'100000','request_id':'bad-image-request','order_id':'unknown-order'},
                        files={'photo':('invalid.png',b'not an image','image/png')})
     assert result.status_code==400
     assert not fake.send_photo.called

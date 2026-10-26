@@ -2,12 +2,15 @@ import json
 import secrets
 import sqlite3
 import tempfile
+import contextlib
 from html import escape
 from pathlib import Path
 
 from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from aiogram.exceptions import TelegramAPIError
 
 from .store import DomainError, audit, now
+from .receipt_messages import receipt_message
 
 
 def keys(rows):
@@ -89,15 +92,8 @@ class AdminBot:
                         f"موجودی: {u['balance']:,}\nوضعیت: {'مسدود' if u['banned'] else 'فعال'}", keys(rows))
 
     async def receipt(self, actor, receipt_id):
-        row = self.db.one('SELECT * FROM receipts WHERE id=?', (receipt_id,))
-        if not row:
-            raise DomainError('رسید پیدا نشد.')
-        rows = [[('✅ تأیید و افزایش موجودی', 'adm:receiptapprove:' + receipt_id),
-                 ('❌ رد رسید', 'adm:receiptreject:' + receipt_id)]] if row['status'] == 'pending' else []
-        rows.append(BACK)
-        await self.bot.send_photo(actor, row['file_id'],
-             caption=f"رسید <code>{receipt_id}</code>\nکاربر: {row['user_id']}\nمبلغ: {row['amount']:,} تومان\nوضعیت: {row['status']}\n"
-                     'تأیید را فقط پس از تطبیق تراکنش بانکی انجام بده.', reply_markup=keys(rows), parse_mode='HTML')
+        row,caption,markup=receipt_message(self.store,receipt_id)
+        await self.bot.send_photo(actor,row['file_id'],caption=caption,reply_markup=markup,parse_mode='HTML')
 
     async def ticket(self, actor, ticket_id):
         ticket = self.db.one('SELECT * FROM tickets WHERE id=?', (ticket_id,))
@@ -192,6 +188,11 @@ class AdminBot:
             await self.receipt(actor, parts[2])
         elif action in {'receiptapprove','receiptreject'}:
             self.store.review_receipt(parts[2], action=='receiptapprove', actor)
+            if query.message:
+                _,caption,markup=receipt_message(self.store,parts[2])
+                with contextlib.suppress(TelegramAPIError):
+                    await self.bot.edit_message_caption(chat_id=actor,message_id=query.message.message_id,
+                                                       caption=caption,reply_markup=markup,parse_mode='HTML')
             await self.send(actor, 'رسید بررسی و نتیجه برای کاربر ثبت شد.', keys([[('رسیدهای بعدی','adm:receipts')],BACK]))
         elif action == 'tickets':
             rows = self.db.all("SELECT * FROM tickets WHERE status!='closed' ORDER BY updated_at DESC LIMIT 25")

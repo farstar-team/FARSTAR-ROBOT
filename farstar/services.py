@@ -264,9 +264,13 @@ class Provisioner:
             stars = order["payment_method"] == "stars"
             if stars:
                 con.execute("UPDATE payments SET status='refund_pending' WHERE charge_id=?", (order["charge_id"],))
-            con.execute("UPDATE orders SET status=? WHERE id=?", ("refund_pending" if stars else "refunded", order_id))
+            manual=order['payment_method']=='card'
+            con.execute("UPDATE orders SET status=? WHERE id=?", ("refund_pending" if stars or manual else "refunded", order_id))
             audit(con, "admin", "order.refund_request", order_id)
-            if not stars:
+            if manual:
+                notify(con,order['user_id'],'درخواست بازپرداخت بانکی برای پشتیبانی ثبت شد؛ نتیجه را از پشتیبانی پیگیری کن.','refund:'+order_id)
+                self.store.admins(con,f"💳 سفارش <code>{order_id}</code> به بازپرداخت بانکی دستی مبلغ {order['price']:,} تومان نیاز دارد.",'manual-refund:'+order_id)
+            elif not stars:
                 notify(con, order["user_id"], f"مبلغ سفارش {order_id} به کیف پول بازگشت.", "refund:" + order_id)
 
 
@@ -284,6 +288,9 @@ class Worker:
             return
         from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
         from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        from aiogram.types import BufferedInputFile
+        from .qr import subscription_card
+        from .receipt_messages import receipt_message
         for row in self.db.all("SELECT * FROM outbox WHERE sent_at IS NULL AND attempts<10 AND next_attempt<=? ORDER BY id LIMIT 25", (now(),)):
             try:
                 buttons = [[InlineKeyboardButton(text='⌂ منوی اصلی',callback_data='menu:home')]]
@@ -291,8 +298,26 @@ class Worker:
                     buttons.insert(0,[InlineKeyboardButton(text='📡 سرویس‌های من',callback_data='menu:services')])
                 if row['user_id'] in self.store.settings.admin_ids:
                     buttons.insert(0,[InlineKeyboardButton(text='⚙️ مدیریت ربات',callback_data='adm:home')])
-                await self.bot.send_message(row["user_id"], row["body"], parse_mode="HTML",
-                                           reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+                markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+                if row['dedupe'].startswith('admin:') and ':receipt:' in row['dedupe']:
+                    receipt,caption,markup=receipt_message(self.store,row['dedupe'].rsplit(':',1)[1])
+                    await self.bot.send_photo(row['user_id'],receipt['file_id'],caption=caption,parse_mode='HTML',reply_markup=markup)
+                elif row['dedupe'].startswith('delivery:'):
+                    order=self.store.order(row['dedupe'].split(':',1)[1])
+                    service=self.db.one('SELECT * FROM services WHERE id=?',(order['service_id'],))
+                    if not service:
+                        raise DomainError('سرویس تحویل پیدا نشد.')
+                    link=subscription(self.store.server(service['server_id']),service['sub_id'])
+                    card=await asyncio.to_thread(subscription_card,link,service)
+                    caption=(f"✅ <b>{'تمدید' if order['kind']=='renew' else 'اشتراک'} آماده است</b>\n"
+                             f"نام حساب: <code>{escape(service['email'])}</code>\n"
+                             f"حجم کل: {service['total_bytes']/GIB:g} گیگابایت\n\n"
+                             f"لینک اشتراک:\n<code>{escape(link)}</code>\n\n"
+                             'QR اختصاصی را در Happ اسکن کن یا لینک را اضافه کن. لینک و تصویر محرمانه‌اند.')
+                    await self.bot.send_photo(row['user_id'],BufferedInputFile(card,filename=service['email']+'.png'),
+                                              caption=caption,parse_mode='HTML',reply_markup=markup)
+                else:
+                    await self.bot.send_message(row["user_id"], row["body"], parse_mode="HTML",reply_markup=markup)
                 with self.db.transaction() as con:
                     con.execute("UPDATE outbox SET sent_at=? WHERE id=?", (now(), row["id"]))
                 await asyncio.sleep(0.06)

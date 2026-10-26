@@ -18,7 +18,7 @@ def seed(store):
                  ("🇳🇱", "هلند", "Amsterdam"), ("🇹🇷", "ترکیه", "Istanbul")]
     with store.db.transaction() as con:
         for i, (flag, country, city) in enumerate(locations, 1):
-            con.execute("INSERT INTO servers VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            con.execute("INSERT INTO servers(id,name,location,url,credentials,inbound_id,subscription_url,capacity,active,trial,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                         (i, f"{flag} {country}", city, f"https://demo-{i}.invalid/panel",
                          store.vault.seal({"token": "demo-no-network"}), i, f"https://demo-{i}.invalid/sub",
                          100 if i != 1 else 50, 1, 1, timestamp))

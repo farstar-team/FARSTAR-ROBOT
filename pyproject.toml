@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "farstar-vpn"
-version = "1.1.1"
+version = "1.2.0"
 description = "Persian Telegram VPN storefront for Sanaei 3x-ui 3.11"
 requires-python = ">=3.11"
 dependencies = [
@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "ruff>=0.11"]
+dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "ruff>=0.11", "zxing-cpp>=2.3,<4"]
 guides = ["arabic-reshaper>=3,<4", "python-bidi>=0.6,<1"]
 
 [tool.setuptools.packages.find]

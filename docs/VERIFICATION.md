@@ -1,5 +1,11 @@
 # Verification — 2026-10-26
 
+## Version 1.2.0
+
+- **74 tests passed.** Additional coverage includes concurrent direct-card approvals with unchanged wallet balance, a review hold that blocks expiration/cancellation/second payment, receipt rejection and resubmission, exact amount/ownership and duplicate-image checks, the first administrator photo notification with inline approve/reject actions, native checkout through photo upload, unauthorized approval rejection and provisioning/delivery after approval.
+- Branded QR cards are decoded back to the exact subscription URL using ZXing, including after JPEG compression at quality 70 and for long subscription URLs. Branding remains outside the QR quiet zone. The decoder is a development dependency only.
+- The full flow is exercised with Telegram and panel stubs; no real bank transfer or live receipt approval is performed as a test. Legacy balances and previous transactions are preserved. A fresh demo database also seeds successfully after the schema extensions.
+
 ## Version 1.1.1
 
 - **63 tests passed.** Nine additional cases cover a single shared client across four inbounds, consecutive names after existing manual clients, partial-create and ambiguous-attach recovery, new-inbound synchronization without changing identity/quota, foreign-client isolation, concurrent durable name reservations, external naming races, paginated official API shapes, safe legacy-database migration and renewal without duplicate volume/time.

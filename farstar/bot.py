@@ -1,11 +1,9 @@
-import io
 import json
 import logging
 from datetime import datetime
 from html import escape
 from zoneinfo import ZoneInfo
 
-import qrcode
 from aiogram import BaseMiddleware, Dispatcher, F, Router
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import (
@@ -18,6 +16,7 @@ from .admin_bot import AdminBot
 from .happ import device_keyboard, send_guide
 from .security import rate_limit
 from .services import GIB, subscription
+from .qr import subscription_card
 from .store import DomainError, now
 
 TERMS = (
@@ -157,10 +156,21 @@ def build_dispatcher(store, provisioner, bot):
                 f"حجم: {snap['volume_gb']} گیگابایت\nاعتبار: {snap['days']:g} روز\n"
                 f"مبلغ: <b>{money(order['price'])}</b>\nشماره: <code>{order['id']}</code>\n\n"
                 "با پرداخت، قوانین فروشگاه را تأیید می‌کنید. مهلت فاکتور ۳۰ دقیقه است.")
-        if order["status"] == "paid":
-            await send(order["user_id"], body + "\n\n✅ سفارش در صف فعال‌سازی است.")
+        if order["status"] in {'paid','processing','completed'}:
+            status='✅ سفارش تحویل شد؛ لینک و QR را از سرویس‌های من ببین.' if order['status']=='completed' else '✅ سفارش در صف فعال‌سازی است.'
+            await send(order["user_id"], body + '\n\n' + status)
             return
-        rows = [[("پرداخت با کیف پول", "wallet:" + order["id"])]]
+        if order['status']=='awaiting_review':
+            await send(order['user_id'],body+'\n\n🧾 رسید دریافت شد؛ پس از تأیید مدیر، اشتراک و QR مستقیم ارسال می‌شود.')
+            return
+        if order['status']!='pending' or order['expires_at']<now():
+            await send(order['user_id'],body+'\n\nاین فاکتور قابل پرداخت نیست؛ از وضعیت سفارش یا پشتیبانی پیگیری کن.')
+            return
+        rows = []
+        if settings.manual_payments and settings.currency=='IRT':
+            rows.append([('💳 کارت‌به‌کارت و ارسال رسید','card:'+order['id'])])
+        if store.user(order['user_id'])['balance'] >= order['price']:
+            rows.append([("پرداخت با موجودی قبلی کیف پول", "wallet:" + order["id"])])
         if settings.currency == "XTR":
             rows.insert(0, [("پرداخت با استار ⭐", "stars:" + order["id"])])
         rows.append([("لغو فاکتور", "cancel-order:" + order["id"])])
@@ -215,8 +225,7 @@ def build_dispatcher(store, provisioner, bot):
         entries = db.all("SELECT amount,kind FROM ledger WHERE user_id=? ORDER BY id DESC LIMIT 5", (user_id,))
         history = "\n".join(f"{'+' if e['amount'] > 0 else ''}{money(e['amount'])}" for e in entries)
         keys = [[("🎟 ثبت کد هدیه", "gift")]]
-        if settings.manual_payments and settings.currency == "IRT" and settings.card_number:
-            keys.insert(0, [("🧾 افزایش موجودی با رسید", "topup")])
+        keys.insert(0, [('🛍 خرید مستقیم با کارت‌به‌کارت','menu:buy')])
         await send(user_id, f"💰 <b>کیف پول</b>\n\nموجودی: {money(user['balance'])}\n\n{history}", keyboard(keys))
 
     async def support(user_id):
@@ -232,11 +241,12 @@ def build_dispatcher(store, provisioner, bot):
 
     async def orders(user_id):
         rows = db.all('SELECT * FROM orders WHERE user_id=? ORDER BY created_at DESC LIMIT 10', (user_id,))
-        labels = {'pending':'منتظر پرداخت','checkout':'در حال پرداخت','paid':'در صف ساخت','processing':'در حال ساخت',
+        labels = {'pending':'منتظر پرداخت','awaiting_review':'منتظر تأیید رسید','checkout':'در حال پرداخت','paid':'در صف ساخت','processing':'در حال ساخت',
                   'completed':'تحویل شد','failed':'بررسی پشتیبانی','expired':'منقضی','refunded':'بازپرداخت شد',
                   'refund_pending':'در صف بازپرداخت','cancelled':'لغو شد'}
         await send(user_id, '🧾 <b>سفارش‌های من</b>\n\n'+ ('\n'.join(
-            f"<code>{o['id']}</code> · {money(o['price'])} · {labels.get(o['status'],o['status'])}" for o in rows) or 'هنوز سفارشی نداری.'))
+            f"<code>{o['id']}</code> · {money(o['price'])} · {labels.get(o['status'],o['status'])}" for o in rows) or 'هنوز سفارشی نداری.'),
+            keyboard([[(f"{o['id']} · {labels.get(o['status'],o['status'])}",'order:'+o['id'])] for o in rows]))
 
     admin = AdminBot(store, provisioner, bot, send)
 
@@ -324,6 +334,17 @@ def build_dispatcher(store, provisioner, bot):
             elif action == "wallet":
                 store.pay_wallet(parts[1], user_id)
                 await send(user_id, "✅ پرداخت از کیف پول ثبت شد. سرویس به‌زودی تحویل داده می‌شود.")
+            elif action == 'order':
+                await show_order(store.order(parts[1],user_id))
+            elif action == 'card':
+                if not settings.manual_payments or not settings.card_number or not settings.card_holder:
+                    raise DomainError('پرداخت کارت‌به‌کارت هنوز آماده نیست.')
+                order=store.receipt_order(parts[1],user_id)
+                store.set_state(user_id,'receipt_photo',{'order_id':order['id'],'amount':order['price']})
+                await send(user_id,f"💳 مبلغ دقیق <b>{money(order['price'])}</b> را واریز کن:\n"
+                           f"<code>{escape(settings.card_number)}</code>\nبه نام {escape(settings.card_holder)}\n"
+                           f"سفارش: <code>{order['id']}</code>\n\nعکس فیش را همین‌جا بفرست؛ پس از تأیید مدیر، اشتراک با لینک و QR مستقیم ارسال می‌شود.",
+                           keyboard([[('↩ سفارش من','order:'+order['id'])]]))
             elif action == "cancel-order":
                 store.cancel_order(parts[1], user_id)
                 await send(user_id, "فاکتور لغو شد و ظرفیت آن آزاد شد.")
@@ -345,10 +366,8 @@ def build_dispatcher(store, provisioner, bot):
             elif action == "qr":
                 service = owned_service(parts[1], user_id)
                 link = subscription(store.server(service["server_id"]), service["sub_id"])
-                buffer = io.BytesIO()
-                qrcode.make(link).save(buffer, format="PNG")
-                await bot.send_photo(user_id, BufferedInputFile(buffer.getvalue(), filename="subscription.png"),
-                                     caption="📱 QR اشتراک شما؛ این تصویر را محرمانه نگه دارید.")
+                await bot.send_photo(user_id, BufferedInputFile(subscription_card(link,service), filename=service['email']+'.png'),
+                                     caption=f"📱 QR اختصاصی <code>{escape(service['email'])}</code>\n<code>{escape(link)}</code>")
             elif action == "links":
                 service = owned_service(parts[1], user_id)
                 async with provisioner.panel(store.server(service["server_id"])) as panel:
@@ -364,12 +383,8 @@ def build_dispatcher(store, provisioner, bot):
                 store.set_state(user_id, "gift")
                 await send(user_id, "کد هدیه را بفرست. برای لغو /cancel را بزن.")
             elif action == "topup":
-                if not settings.manual_payments or settings.currency != "IRT":
-                    raise DomainError("پرداخت دستی فعال نیست.")
-                if not settings.card_number or not settings.card_holder:
-                    raise DomainError("مشخصات کارت فروشگاه هنوز تنظیم نشده است؛ از پشتیبانی پیگیری کنید.")
-                store.set_state(user_id, "topup_amount")
-                await send(user_id, "مبلغ افزایش موجودی به تومان را به صورت عدد بفرست.")
+                store.set_state(user_id)
+                await show_plans(user_id)
             elif action == "ticket":
                 if parts[1] == "new":
                     store.set_state(user_id, "ticket")
@@ -423,11 +438,7 @@ def build_dispatcher(store, provisioner, bot):
                     return
                 if command == "/receipt":
                     receipt_id = text.split(maxsplit=1)[1]
-                    row = db.one("SELECT * FROM receipts WHERE id=?", (receipt_id,))
-                    if not row:
-                        raise DomainError("رسید پیدا نشد.")
-                    await bot.send_photo(user_id, row["file_id"], caption=f"رسید {receipt_id}\nکاربر {row['user_id']}\nمبلغ {money(row['amount'])}",
-                                         reply_markup=keyboard([[("تأیید", f"receipt:approve:{receipt_id}"), ("رد", f"receipt:reject:{receipt_id}")]]))
+                    await admin.receipt(user_id,receipt_id)
                     return
             # Main menu always cancels a pending conversation state.
             if text in {"🛍 خرید سرویس", "📡 سرویس‌های من", "💰 کیف پول", "🧪 تست رایگان", "🎁 دعوت دوستان", "🧾 سفارش‌های من", "📚 راهنمای اتصال"}:
@@ -463,16 +474,19 @@ def build_dispatcher(store, provisioner, bot):
                     store.set_state(user_id)
                     await send(user_id, f"✅ تیکت #{ticket_id} ثبت شد؛ پاسخ در همین ربات می‌رسد.")
                 elif state == "topup_amount" and text:
-                    amount = int(text.replace(",", "").replace("٬", ""))
-                    if not 10000 <= amount <= 100000000:
-                        raise DomainError("مبلغ باید بین ۱۰ هزار تا ۱۰۰ میلیون تومان باشد.")
-                    store.set_state(user_id, "receipt_photo", {"amount": amount})
-                    await send(user_id, f"مبلغ {money(amount)} را واریز کن:\n<code>{escape(settings.card_number)}</code>\n"
-                               f"به نام {escape(settings.card_holder)}\n\nسپس عکس رسید را همین‌جا بفرست. موجودی پس از تأیید مدیر افزایش می‌یابد.")
-                elif state == "receipt_photo" and message.photo:
-                    rid = store.add_receipt(user_id, state_data["amount"], message.photo[-1].file_id)
                     store.set_state(user_id)
-                    await send(user_id, f"🧾 رسید ثبت شد. کد پیگیری: <code>{rid}</code>")
+                    await send(user_id,'پرداخت کارت‌به‌کارت مستقیم برای سفارش انجام می‌شود؛ اول پلن را انتخاب کن.')
+                    await show_plans(user_id)
+                elif state == "receipt_photo" and message.photo:
+                    if not state_data.get('order_id'):
+                        store.set_state(user_id)
+                        await send(user_id,'برای ثبت رسید، سفارش را از بخش سفارش‌های من انتخاب کن.')
+                        await orders(user_id)
+                        return
+                    rid = store.add_receipt(user_id, state_data["amount"], message.photo[-1].file_id,state_data['order_id'],
+                                            file_unique_id=message.photo[-1].file_unique_id)
+                    store.set_state(user_id)
+                    await send(user_id, f"🧾 رسید ثبت شد. کد پیگیری: <code>{rid}</code>\nپس از تأیید مدیر، اشتراک و QR همین‌جا ارسال می‌شود.")
                 elif state == "receipt_photo":
                     await send(user_id, "لطفاً تصویر رسید را به صورت عکس بفرست؛ برای لغو /cancel.")
                 else:

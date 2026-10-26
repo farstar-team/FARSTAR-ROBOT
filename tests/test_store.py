@@ -90,14 +90,17 @@ def test_successful_payment_after_invoice_expiry_is_not_lost(store):
     assert store.order(order["id"])["status"] == "paid"
 
 
-def test_receipt_review_credits_once(store):
+def test_receipt_review_pays_order_once_without_wallet_credit(store):
     store.settings.manual_payments = True
     store.settings.currency = "IRT"
-    receipt = store.add_receipt(1, 200000, "file-one")
+    order=store.create_order(1,1)
+    receipt = store.add_receipt(1, order['price'], "file-one",order['id'])
     store.review_receipt(receipt, True, "admin")
     with pytest.raises(DomainError):
         store.review_receipt(receipt, True, "admin")
-    assert store.user(1)["balance"] == 201000
+    assert store.user(1)["balance"] == 1000
+    assert store.order(order['id'])['status']=='paid'
+    assert store.order(order['id'])['payment_method']=='card'
 
 
 def test_ban_prevents_checkout(store):

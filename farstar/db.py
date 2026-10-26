@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 CREATE INDEX IF NOT EXISTS orders_queue ON orders(status, next_attempt, lease_until);
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_renewal ON orders(service_id)
- WHERE kind='renew' AND status IN ('pending','paid','processing','failed','refund_pending');
+ WHERE kind='renew' AND status IN ('pending','checkout','awaiting_review','paid','processing','failed','refund_pending');
 CREATE TABLE IF NOT EXISTS ledger (
  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), amount INTEGER NOT NULL,
  kind TEXT NOT NULL, reference TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL
@@ -68,7 +68,8 @@ CREATE TABLE IF NOT EXISTS referral_rewards (
 CREATE TABLE IF NOT EXISTS receipts (
  id TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
  amount INTEGER NOT NULL CHECK(amount > 0), file_id TEXT NOT NULL UNIQUE,
- status TEXT NOT NULL DEFAULT 'pending', reviewed_by TEXT, created_at INTEGER NOT NULL
+ status TEXT NOT NULL DEFAULT 'pending', reviewed_by TEXT, created_at INTEGER NOT NULL,
+ order_id TEXT REFERENCES orders(id), file_unique_id TEXT, image_hash TEXT
 );
 CREATE TABLE IF NOT EXISTS tickets (
  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
@@ -133,6 +134,17 @@ class Database:
             con.executescript(SCHEMA)
             if 'all_inbounds' not in {r['name'] for r in con.execute('PRAGMA table_info(servers)')}:
                 con.execute('ALTER TABLE servers ADD COLUMN all_inbounds INTEGER NOT NULL DEFAULT 0')
+            columns = {r['name'] for r in con.execute('PRAGMA table_info(receipts)')}
+            for name, definition in [('order_id','TEXT REFERENCES orders(id)'),('file_unique_id','TEXT'),('image_hash','TEXT')]:
+                if name not in columns:
+                    con.execute(f'ALTER TABLE receipts ADD COLUMN {name} {definition}')
+            con.execute("CREATE UNIQUE INDEX IF NOT EXISTS receipt_one_pending ON receipts(order_id) WHERE status='pending' AND order_id IS NOT NULL")
+            con.execute('CREATE UNIQUE INDEX IF NOT EXISTS receipt_unique_photo ON receipts(file_unique_id) WHERE file_unique_id IS NOT NULL')
+            con.execute('CREATE UNIQUE INDEX IF NOT EXISTS receipt_unique_image ON receipts(image_hash) WHERE image_hash IS NOT NULL')
+            index = con.execute("SELECT sql FROM sqlite_master WHERE name='one_active_renewal'").fetchone()
+            if index and 'awaiting_review' not in index['sql']:
+                con.execute('DROP INDEX one_active_renewal')
+                con.execute("CREATE UNIQUE INDEX one_active_renewal ON orders(service_id) WHERE kind='renew' AND status IN ('pending','checkout','awaiting_review','paid','processing','failed','refund_pending')")
             con.execute("INSERT OR IGNORE INTO meta VALUES ('schema_version','1')")
             con.commit()
             version = con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]

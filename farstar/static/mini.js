@@ -22,7 +22,7 @@ const paths={home:'M3 10l9-7 9 7v11h-6v-7H9v7H3V10z',bag:'M5 7h14l1 14H4L5 7zM9 
  send:'M22 2L9 15M22 2l-7 20-4-9-9-4 20-7z',tag:'M20 13l-7 8L2 10V2h8l10 11zM7 7h.01',
  settings:'M4 6h16M4 12h16M4 18h16M8 3v6M16 9v6M10 15v6',qr:'M3 3h6v6H3zM15 3h6v6h-6zM3 15h6v6H3zM15 15h3v3h3v3h-6v-6z'};
 const icon=name=>`<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="${paths[name]||paths.home}"/></svg>`;
-const labels={pending:['منتظر پرداخت','amber'],checkout:['در حال پرداخت','amber'],paid:['در صف تحویل','purple'],processing:['در حال ساخت','purple'],completed:['تحویل شد','green'],failed:['بررسی پشتیبانی','red'],cancelled:['لغو شد',''],expired:['منقضی',''],refunded:['بازپرداخت شد',''],refund_pending:['بازپرداخت در صف','amber'],approved:['تأیید شد','green'],rejected:['رد شد','red'],open:['منتظر پاسخ','amber'],answered:['پاسخ داده شد','green'],closed:['بسته شد','']};
+const labels={pending:['منتظر پرداخت','amber'],awaiting_review:['منتظر تأیید فیش','amber'],checkout:['در حال پرداخت','amber'],paid:['در صف تحویل','purple'],processing:['در حال ساخت','purple'],completed:['تحویل شد','green'],failed:['بررسی پشتیبانی','red'],cancelled:['لغو شد',''],expired:['منقضی',''],refunded:['بازپرداخت شد',''],refund_pending:['بازپرداخت در صف','amber'],approved:['تأیید شد','green'],rejected:['رد شد','red'],open:['منتظر پاسخ','amber'],answered:['پاسخ داده شد','green'],closed:['بسته شد','']};
 const badge=value=>{const [title,kind]=labels[value]||[value,''];return `<span class="badge ${kind}">${e(title)}</span>`;};
 let toastTimer,renderId=0,controller;
 const state={role:location.pathname==='/admin-app'?'admin':'customer',csrf:'',token:'',me:null,context:null};

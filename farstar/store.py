@@ -206,7 +206,7 @@ class Store:
                 raise DomainError("حساب در دسترس نیست.")
             if not user["terms_at"]:
                 raise DomainError("ابتدا قوانین فروشگاه را بپذیرید.")
-            pending_count = con.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status IN ('pending','checkout')",
+            pending_count = con.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status IN ('pending','checkout','awaiting_review')",
                                         (user_id,)).fetchone()[0]
             if pending_count >= 3:
                 raise DomainError("سه فاکتور باز دارید؛ ابتدا یکی را پرداخت کنید یا منتظر پایان مهلت بمانید.")
@@ -232,13 +232,13 @@ class Store:
                                       (service_id, user_id)).fetchone()
                 if not service or service["is_trial"] or service["server_id"] != server["id"]:
                     raise DomainError("این سرویس با پلن انتخابی قابل تمدید نیست.")
-                if con.execute("SELECT 1 FROM orders WHERE service_id=? AND status IN ('pending','checkout','paid','processing','failed','refund_pending')",
+                if con.execute("SELECT 1 FROM orders WHERE service_id=? AND status IN ('pending','checkout','awaiting_review','paid','processing','failed','refund_pending')",
                                (service_id,)).fetchone():
                     raise DomainError("برای این سرویس یک سفارش تمدید باز دارید.")
             else:
                 occupied = con.execute("SELECT COUNT(*) FROM services WHERE server_id=? AND expires_at>?",
                                        (server["id"], timestamp)).fetchone()[0]
-                reserved = con.execute("SELECT COUNT(*) FROM orders WHERE server_id=? AND kind!='renew' AND status IN ('pending','checkout','paid','processing','failed')",
+                reserved = con.execute("SELECT COUNT(*) FROM orders WHERE server_id=? AND kind!='renew' AND status IN ('pending','checkout','awaiting_review','paid','processing','failed')",
                                        (server["id"],)).fetchone()[0]
                 if occupied + reserved >= server["capacity"]:
                     raise DomainError("ظرفیت این سرور تکمیل است.")
@@ -354,18 +354,32 @@ class Store:
                 self.admins(con, "یک پرداخت تکراری یا نامطابق برای بازپرداخت ثبت شد.", "duplicate:" + charge_id)
             audit(con, user_id, "order.stars_settle", order_id, {"amount": amount, "valid": valid})
 
-    def add_receipt(self, user_id, amount, file_id):
+    def receipt_order(self, order_id, user_id):
+        order = self.order(order_id,user_id)
+        user = self.user(user_id)
+        if (not user or user['banned'] or order['status'] != 'pending' or order['expires_at'] < now()
+                or order['currency'] != 'IRT' or order['price'] <= 0):
+            raise DomainError('این سفارش قابل پرداخت کارت‌به‌کارت نیست؛ وضعیت فاکتور را بررسی کنید.')
+        return order
+
+    def add_receipt(self, user_id, amount, file_id, order_id, file_unique_id=None, image_hash=None):
         if not self.settings.manual_payments or self.settings.currency != "IRT":
             raise DomainError("پرداخت دستی فعال نیست.")
         receipt_id = uid()
         try:
             with self.db.transaction() as con:
-                con.execute("INSERT INTO receipts(id,user_id,amount,file_id,created_at) VALUES (?,?,?,?,?)",
-                            (receipt_id, user_id, amount, file_id, now()))
-                self.admins(con, f"🧾 رسید تازه: <code>{receipt_id}</code>\nمبلغ: {amount:,} تومان\n/receipt {receipt_id}",
+                order = con.execute('SELECT o.*,u.banned FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=? AND o.user_id=?',
+                                    (order_id,user_id)).fetchone()
+                if (not order or order['banned'] or order['status'] != 'pending' or order['expires_at'] < now()
+                        or order['currency'] != 'IRT' or order['price'] != amount or amount <= 0):
+                    raise DomainError('مبلغ یا وضعیت سفارش با رسید مطابقت ندارد؛ فاکتور را بررسی کنید.')
+                con.execute("INSERT INTO receipts(id,user_id,amount,file_id,created_at,order_id,file_unique_id,image_hash) VALUES (?,?,?,?,?,?,?,?)",
+                            (receipt_id, user_id, amount, file_id, now(),order_id,file_unique_id or None,image_hash or None))
+                con.execute("UPDATE orders SET status='awaiting_review',payment_method='card' WHERE id=?",(order_id,))
+                self.admins(con, f"🧾 رسید سفارش <code>{order_id}</code>\nمبلغ: {amount:,} تومان",
                             "receipt:" + receipt_id)
         except sqlite3.IntegrityError as exc:
-            raise DomainError("این تصویر قبلاً ثبت شده است.") from exc
+            raise DomainError("این تصویر قبلاً ثبت شده یا سفارش یک رسید در انتظار بررسی دارد.") from exc
         return receipt_id
 
     def review_receipt(self, receipt_id, approve, actor):
@@ -374,11 +388,19 @@ class Store:
             if not row or row["status"] != "pending":
                 raise DomainError("رسید پیدا نشد یا قبلاً بررسی شده است.")
             if approve:
-                credit(con, row["user_id"], row["amount"], "receipt", "receipt:" + receipt_id)
+                order = con.execute('SELECT o.*,u.banned FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=?', (row['order_id'],)).fetchone()
+                if (not order or order['user_id'] != row['user_id'] or order['status'] != 'awaiting_review'
+                        or order['price'] != row['amount'] or order['currency'] != 'IRT' or order['banned']):
+                    raise DomainError('این رسید به سفارش قابل تحویل متصل نیست؛ سفارش یا مسدودی کاربر را بررسی کنید.')
+                con.execute("UPDATE orders SET status='paid',paid_at=?,payment_method='card',charge_id=?,last_error=NULL,next_attempt=0 WHERE id=?",
+                            (now(),'receipt:'+receipt_id,row['order_id']))
+            elif row['order_id']:
+                con.execute("UPDATE orders SET status='pending',expires_at=?,payment_method=NULL WHERE id=? AND status='awaiting_review'",
+                            (now()+1800,row['order_id']))
             status = "approved" if approve else "rejected"
             con.execute("UPDATE receipts SET status=?,reviewed_by=? WHERE id=?", (status, str(actor), receipt_id))
-            notify(con, row["user_id"], "✅ رسید تأیید و کیف پول شارژ شد." if approve else
-                   "رسید تأیید نشد. برای پیگیری به پشتیبانی پیام بدهید.", "receipt-result:" + receipt_id)
+            notify(con, row["user_id"], "✅ پرداخت تأیید شد؛ اشتراک همراه لینک و QR همین‌جا برایت ارسال می‌شود." if approve else
+                   "رسید تأیید نشد. از سفارش‌های من می‌توانی رسید درست را دوباره ارسال کنی یا به پشتیبانی پیام بدهی.", "receipt-result:" + receipt_id)
             audit(con, actor, "receipt." + status, receipt_id)
 
     def adjust_balance(self, user_id, amount, reference):

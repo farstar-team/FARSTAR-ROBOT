@@ -2,6 +2,7 @@ import asyncio
 import io
 import json
 import secrets
+import hashlib
 from typing import Annotated, Literal
 
 from aiogram.types import BufferedInputFile
@@ -253,11 +254,9 @@ def mount_miniapps(app, store, worker, static):
 
     @app.get('/mini-api/services/{service_id}/qr')
     def qr(service_id: str, auth: Customer):
-        import qrcode
+        from .qr import subscription_card
         service = owned(service_id, auth['user_id'])
-        buffer = io.BytesIO()
-        qrcode.make(subscription(store.server(service['server_id']), service['sub_id'])).save(buffer, format='PNG')
-        return Response(buffer.getvalue(), media_type='image/png')
+        return Response(subscription_card(subscription(store.server(service['server_id']), service['sub_id']),service),media_type='image/png')
 
     @app.post('/mini-api/trial')
     async def trial(auth: Customer):
@@ -274,7 +273,7 @@ def mount_miniapps(app, store, worker, static):
 
     @app.get('/mini-api/receipts')
     def receipts(auth: Customer):
-        return db.all('SELECT id,amount,status,created_at FROM receipts WHERE user_id=? ORDER BY created_at DESC LIMIT 30',
+        return db.all('SELECT id,order_id,amount,status,created_at FROM receipts WHERE user_id=? ORDER BY created_at DESC LIMIT 30',
                       (auth['user_id'],))
 
     def normalize_image(raw):
@@ -294,6 +293,7 @@ def mount_miniapps(app, store, worker, static):
     @app.post('/mini-api/receipts')
     async def receipt_upload(auth: Customer, amount: Annotated[int, Form(ge=10000, le=100000000)],
                              request_id: Annotated[str, Form(min_length=8, max_length=80)],
+                             order_id: Annotated[str, Form(min_length=8, max_length=40)],
                              photo: Annotated[UploadFile, File()]):
         if not settings.manual_payments or settings.currency != 'IRT' or not settings.card_number:
             raise DomainError('پرداخت کارت‌به‌کارت هنوز آماده نیست.')
@@ -308,10 +308,16 @@ def mount_miniapps(app, store, worker, static):
             previous = db.one('SELECT * FROM upload_requests WHERE user_id=? AND request_id=?',
                               (auth['user_id'], request_id))
             if previous and previous['receipt_id']:
-                receipt = db.one('SELECT amount FROM receipts WHERE id=?', (previous['receipt_id'],))
-                if receipt['amount'] != amount:
-                    raise DomainError('مبلغ این رسید قبلاً با مقدار دیگری ثبت شده است.')
+                receipt = db.one('SELECT amount,order_id FROM receipts WHERE id=?', (previous['receipt_id'],))
+                if receipt['amount'] != amount or receipt['order_id'] != order_id:
+                    raise DomainError('این شناسه رسید قبلاً برای سفارش یا مبلغ دیگری ثبت شده است.')
                 return {'id': previous['receipt_id']}
+            order=store.receipt_order(order_id,auth['user_id'])
+            if amount != order['price']:
+                raise DomainError('مبلغ رسید باید دقیقاً برابر مبلغ سفارش باشد.')
+            image_hash=hashlib.sha256(image).hexdigest()
+            if db.one('SELECT 1 FROM receipts WHERE image_hash=?',(image_hash,)):
+                raise DomainError('این تصویر قبلاً برای یک رسید ثبت شده است.')
             with db.transaction() as con:
                 row = con.execute('SELECT * FROM upload_requests WHERE user_id=? AND request_id=?',
                                   (auth['user_id'], request_id)).fetchone()
@@ -321,13 +327,14 @@ def mount_miniapps(app, store, worker, static):
                             (auth['user_id'], request_id, now() + 120))
             try:
                 sent = await worker.bot.send_photo(auth['user_id'], BufferedInputFile(image, filename='receipt.jpg'),
-                                                   caption=f'🧾 رسید افزایش موجودی · {amount:,} تومان')
+                                                   caption=f'🧾 رسید سفارش {order_id} · {amount:,} تومان · منتظر تأیید مدیر')
                 file_id = sent.photo[-1].file_id
                 existing = db.one('SELECT * FROM receipts WHERE file_id=?', (file_id,))
-                if existing and existing['user_id'] == auth['user_id'] and existing['amount'] == amount:
+                if existing and existing['user_id'] == auth['user_id'] and existing['amount'] == amount and existing['order_id']==order_id:
                     receipt_id = existing['id']
                 else:
-                    receipt_id = store.add_receipt(auth['user_id'], amount, file_id)
+                    receipt_id = store.add_receipt(auth['user_id'], amount, file_id,order_id,
+                                file_unique_id=getattr(sent.photo[-1],'file_unique_id',None),image_hash=image_hash)
                 with db.transaction() as con:
                     con.execute('UPDATE upload_requests SET receipt_id=?,lease_until=0 WHERE user_id=? AND request_id=?',
                                 (receipt_id, auth['user_id'], request_id))
