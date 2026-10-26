@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS servers (
  url TEXT NOT NULL, credentials TEXT NOT NULL, inbound_id INTEGER NOT NULL,
  subscription_url TEXT NOT NULL, capacity INTEGER NOT NULL DEFAULT 1000,
  active INTEGER NOT NULL DEFAULT 1, trial INTEGER NOT NULL DEFAULT 1,
+ all_inbounds INTEGER NOT NULL DEFAULT 0,
  created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS plans (
@@ -130,6 +131,8 @@ class Database:
         with contextlib.closing(self.connect()) as con:
             con.execute("PRAGMA journal_mode=WAL")
             con.executescript(SCHEMA)
+            if 'all_inbounds' not in {r['name'] for r in con.execute('PRAGMA table_info(servers)')}:
+                con.execute('ALTER TABLE servers ADD COLUMN all_inbounds INTEGER NOT NULL DEFAULT 0')
             con.execute("INSERT OR IGNORE INTO meta VALUES ('schema_version','1')")
             con.commit()
             version = con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]

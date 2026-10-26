@@ -37,6 +37,9 @@ class FakePanel:
         self.fail_after_add = False
         self.fail_after_update = False
         self.update_payloads = []
+        self.inbound_rows = [{'enable':True,'protocol':'vless','id':7}]
+        self.attachments = []
+        self.fail_after_attach = False
 
     def __call__(self, server, credentials):
         self.server = server
@@ -48,13 +51,21 @@ class FakePanel:
     async def __aexit__(self, *args):
         pass
 
-    async def inbound(self):
+    async def inbound(self, inbound_id=None):
         return {"enable": True, "protocol": "vless", "id": 7}
+
+    async def inbounds(self):
+        return self.inbound_rows
+
+    async def highest_client_number(self,prefix):
+        import re
+        pattern=re.compile(re.escape(prefix)+r'(\d+)',re.I)
+        return max((int(m[1]) for email in self.clients if (m:=pattern.fullmatch(email))),default=0)
 
     async def get_client(self, email):
         return json.loads(json.dumps(self.clients.get(email)))
 
-    async def add(self, client):
+    async def add(self, client, inbound_ids=None):
         from farstar.panel import PanelError
         assert client["email"] not in self.clients
         self.adds += 1
@@ -64,10 +75,19 @@ class FakePanel:
         record["flow"] = "xtls-rprx-vision"
         record["reverse"] = ""
         record["allowedIPs"] = ""
-        self.clients[client["email"]] = {"client": record, "inboundIds": [7], "usedTraffic": 12345}
+        self.clients[client["email"]] = {"client": record, "inboundIds": list(inbound_ids or [7]), "usedTraffic": 12345}
         if self.fail_after_add:
             self.fail_after_add = False
             raise PanelError("connection lost after remote commit")
+
+    async def attach(self,email,inbound_ids):
+        from farstar.panel import PanelError
+        self.attachments.append((email,list(inbound_ids)))
+        record=self.clients[email]
+        record['inboundIds']=sorted(set(record['inboundIds'])|set(inbound_ids))
+        if self.fail_after_attach:
+            self.fail_after_attach=False
+            raise PanelError('connection lost after attachment commit')
 
     async def update(self, email, client):
         from farstar.panel import PanelError

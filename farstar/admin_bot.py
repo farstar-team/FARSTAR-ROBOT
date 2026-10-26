@@ -229,11 +229,13 @@ class AdminBot:
                 await self.send(actor, 'این سرور نمایشی است؛ درخواست خارجی ارسال نشد.', keys([BACK]))
             else:
                 async with self.provisioner.panel(server) as panel:
-                    inbound = await panel.inbound()
-                await self.send(actor, f"اتصال پنل برقرار است.\nاینباند: {inbound['id']}\nپروتکل: {escape(inbound['protocol'])}\n"
-                                f"وضعیت: {'فعال' if inbound.get('enable') else 'غیرفعال'}", keys([
+                    ids = await self.provisioner.target_inbounds(panel,server)
+                await self.send(actor, f"اتصال پنل برقرار است.\nاینباندهای فروش: {', '.join(map(str,ids))}\n"
+                                f"حالت: {'همه اینباندهای فعال' if server['all_inbounds'] else 'اینباند تکی'}", keys([
                                     [('توقف فروش' if server['active'] else 'فعال کردن فروش',f"adm:servertoggle:{server['id']}")],
                                     [('تست این سرور: '+('فعال' if server['trial'] else 'غیرفعال'),f"adm:servertrial:{server['id']}")],BACK]))
+                await self.send(actor,'برای خرید و اتصال خودکار اینباندهای جدید:',keys([
+                    [('همه اینباندها: '+('فعال' if server['all_inbounds'] else 'غیرفعال'),f"adm:serverall:{server['id']}")],BACK]))
         elif action == 'servertoggle':
             server=self.store.server(int(parts[2]))
             self.store.save_server({'active':not server['active']},server['id'],actor)
@@ -242,6 +244,10 @@ class AdminBot:
             server=self.store.server(int(parts[2]))
             self.store.save_server({'trial':not server['trial']},server['id'],actor)
             await self.send(actor,'اجازه صدور تست روی این سرور تغییر کرد.',keys([BACK]))
+        elif action == 'serverall':
+            server=self.store.server(int(parts[2]))
+            self.store.save_server({'all_inbounds':not server['all_inbounds']},server['id'],actor)
+            await self.send(actor,'حالت اینباندهای فروش ذخیره شد. در حالت همه، اینباندهای فعال و سازگار جدید هم خودکار به اشتراک‌های ربات اضافه می‌شوند.',keys([BACK]))
         elif action == 'services':
             rows=self.db.all('SELECT id,email,user_id,enabled FROM services ORDER BY created_at DESC LIMIT 25')
             await self.send(actor,'📡 سرویس‌های صادرشده توسط فروشگاه' if rows else 'فروشگاه هنوز سرویسی صادر نکرده.',keys([

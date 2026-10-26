@@ -1,5 +1,6 @@
 """3x-ui v3.11 contract: global /clients endpoints, never mutate inbound settings."""
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
+import re
 
 import httpx
 
@@ -59,16 +60,40 @@ class Panel:
             # Never log HTTP URLs: a panel base path can itself be a secret.
             raise PanelError("ارتباط با پنل قطع شد یا پاسخ نامعتبر بود؛ عملیات دوباره بررسی می‌شود.") from exc
 
-    async def inbound(self):
-        return await self.request("GET", f"panel/api/inbounds/get/{self.server['inbound_id']}")
+    async def inbound(self, inbound_id=None):
+        return await self.request("GET", f"panel/api/inbounds/get/{inbound_id or self.server['inbound_id']}")
+
+    async def inbounds(self):
+        return await self.request('GET', 'panel/api/inbounds/list')
+
+    async def highest_client_number(self, prefix):
+        pattern = re.compile(re.escape(prefix) + r'(\d+)', re.I)
+        highest = 0
+        for page in range(1,1001):
+            query = urlencode({'page':page,'pageSize':200,'search':prefix,'sort':'email','order':'asc'})
+            result = await self.request('GET', 'panel/api/clients/list/paged?' + query)
+            if not isinstance(result,dict) or not isinstance(result.get('items'),list) or type(result.get('total')) is not int:
+                raise PanelError('فهرست کاربران پنل برای شماره‌گذاری معتبر نیست.')
+            highest = max(highest, max((int(match[1]) for row in result['items']
+                          if (match := pattern.fullmatch(row.get('email','')))), default=0))
+            if page * 200 >= result['total']:
+                return highest
+            if not result['items']:
+                raise PanelError('صفحه‌بندی کاربران پنل کامل نشد؛ شماره‌گذاری متوقف شد.')
+        raise PanelError('تعداد کاربران برای شماره‌گذاری از حد بررسی بیشتر است.')
 
     async def get_client(self, email):
         return await self.request("GET", "panel/api/clients/get/" + quote(email, safe=""), missing_ok=True)
 
-    async def add(self, client):
+    async def add(self, client, inbound_ids=None):
         return await self.request("POST", "panel/api/clients/add", {
-            "client": client, "inboundIds": [self.server["inbound_id"]],
+            "client": client, "inboundIds": inbound_ids if inbound_ids is not None else [self.server["inbound_id"]],
         })
+
+    async def attach(self, email, inbound_ids):
+        if inbound_ids:
+            return await self.request('POST', 'panel/api/clients/' + quote(email, safe='') + '/attach',
+                                      {'inboundIds': sorted(set(inbound_ids))})
 
     async def update(self, email, client):
         return await self.request("POST", "panel/api/clients/update/" + quote(email, safe=""), client)

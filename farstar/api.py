@@ -51,6 +51,7 @@ class ServerInput(Input):
     capacity: int = Field(default=1000, ge=1, le=1000000)
     active: bool = True
     trial: bool = True
+    all_inbounds: bool = False
     credentials: Credentials | None = None
 
     @field_validator("url", "subscription_url")
@@ -320,7 +321,7 @@ def create_app(settings, run_background=True):
 
     @app.get("/api/servers")
     def servers(auth: Auth):
-        return db.all("""SELECT s.id,s.name,s.location,s.url,s.inbound_id,s.subscription_url,s.capacity,s.active,s.trial,
+        return db.all("""SELECT s.id,s.name,s.location,s.url,s.inbound_id,s.subscription_url,s.capacity,s.active,s.trial,s.all_inbounds,
              (SELECT COUNT(*) FROM services v WHERE v.server_id=s.id AND v.expires_at>?) clients
              FROM servers s ORDER BY s.id""", (now(),))
 
@@ -338,12 +339,13 @@ def create_app(settings, run_background=True):
             raise DomainError("در حالت نمایشی اتصال خارجی انجام نمی‌شود. سرور واقعی را در اجرای اصلی اضافه کنید.")
         server = store.server(server_id)
         async with worker.provisioner.panel(server) as panel:
-            inbound = await panel.inbound()
+            ids = await worker.provisioner.target_inbounds(panel, server)
+            inbound = await panel.inbound(ids[0])
             protocol = inbound.get("protocol", "unknown")
             supported = protocol in {"vless", "vmess", "trojan", "shadowsocks", "hysteria", "tuic"}
-            return {"ok": bool(inbound.get("enable")) and supported, "protocol": protocol,
+            return {"ok": bool(ids) and supported, "protocol": protocol, 'inbound_ids':ids,
                     "enabled": bool(inbound.get("enable")), "remark": inbound.get("remark", ""),
-                    "message": "اتصال موفق" if supported else "پروتکل این اینباند برای فروش پشتیبانی نمی‌شود"}
+                    "message": f"اتصال موفق · {len(ids)} اینباند فعال" if supported else "پروتکل این اینباند برای فروش پشتیبانی نمی‌شود"}
 
     @app.get("/api/plans")
     def plans(auth: Auth):

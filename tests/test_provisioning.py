@@ -90,7 +90,7 @@ async def test_refund_requires_remote_disable_and_is_idempotent(store, panel):
         con.execute("UPDATE orders SET status='failed' WHERE id=?", (order["id"],))
     await provisioner.refund_failed(order["id"])
     assert store.user(1)["balance"] == 1000
-    assert not panel.clients[json.loads(order["snapshot"])["email"]]["client"]["enable"]
+    assert not panel.clients[json.loads(store.order(order['id'])["snapshot"])["email"]]["client"]["enable"]
     with pytest.raises(DomainError):
         await provisioner.refund_failed(order["id"])
     assert store.user(1)["balance"] == 1000

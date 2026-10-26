@@ -276,6 +276,33 @@ class Store:
             raise DomainError("سفارش پیدا نشد.")
         return row
 
+    def reserve_client_name(self, order_id, observed_max=0, advance=False):
+        """Reserve at provisioning, under SQLite's write lock; retain across retries."""
+        import re
+        prefix = self.settings.client_name_prefix
+        pattern = re.compile(re.escape(prefix) + r'(\d+)', re.I)
+        key = 'client-sequence:' + prefix.lower()
+        with self.db.transaction() as con:
+            order = con.execute('SELECT * FROM orders WHERE id=?', (order_id,)).fetchone()
+            if not order or order['kind'] == 'renew' or order['status'] not in {'paid','processing'}:
+                raise DomainError('رزرو نام فقط برای ساخت سفارش پرداخت‌شده ممکن است.')
+            snapshot = json.loads(order['snapshot'])
+            if order['target_json'] or (snapshot.get('name_reserved') and not advance):
+                return snapshot
+            counter = con.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone()
+            highest = max(observed_max, int(counter['value']) if counter else 0,
+                          self.settings.client_number_start - 1)
+            for row in con.execute("SELECT email FROM services UNION SELECT json_extract(snapshot,'$.email') email FROM orders"):
+                match = pattern.fullmatch(row['email'] or '')
+                if match:
+                    highest = max(highest, int(match[1]))
+            number = highest + 1
+            snapshot.update(email=prefix + str(number), name_reserved=True)
+            con.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', (key,str(number)))
+            con.execute('UPDATE orders SET snapshot=? WHERE id=?', (json.dumps(snapshot),order_id))
+            audit(con,'worker','client.name_reserve',order_id,{'email':snapshot['email']})
+            return snapshot
+
     def pay_wallet(self, order_id, user_id):
         with self.db.transaction() as con:
             order = con.execute("SELECT * FROM orders WHERE id=? AND user_id=?", (order_id, user_id)).fetchone()

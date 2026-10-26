@@ -9,6 +9,7 @@ from .store import DomainError, audit, credit, notify, now
 
 log = logging.getLogger(__name__)
 GIB = 1024 ** 3
+SUPPORTED_PROTOCOLS = {'vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria', 'tuic'}
 
 
 def client_payload(record):
@@ -44,6 +45,25 @@ class Provisioner:
 
     def panel(self, server):
         return self.panel_factory(server, self.store.vault.open(server["credentials"]))
+
+    async def target_inbounds(self, panel, server):
+        rows = await panel.inbounds() if server.get('all_inbounds') else [await panel.inbound()]
+        ids = sorted({row['id'] for row in rows if row.get('enable') and row.get('protocol') in SUPPORTED_PROTOCOLS})
+        if not ids:
+            raise DomainError('اینباند فعال و سازگار برای این اشتراک پیدا نشد.')
+        return ids
+
+    async def attach_missing(self, panel, server, record):
+        """Only add memberships for this verified identity; never detach or change quota."""
+        if server.get('all_inbounds'):
+            required = await self.target_inbounds(panel, server)
+            missing = sorted(set(required) - set(record.get('inboundIds', [])))
+            if missing:
+                await panel.attach(record['client']['email'], missing)
+                record = await panel.get_client(record['client']['email'])
+                if not record or not set(required).issubset(record.get('inboundIds', [])):
+                    raise PanelError('اتصال اشتراک به همه اینباندها تأیید نشد.')
+        return record
 
     def claim(self):
         with self.db.transaction() as con:
@@ -82,14 +102,26 @@ class Provisioner:
     async def provision(self, order):
         server = self.store.server(order["server_id"])
         snapshot = json.loads(order["snapshot"])
-        email = snapshot["email"]
         async with self.panel(server) as panel:
+            email = snapshot['email']
             current = await panel.get_client(email)
             stored = self.store.order(order["id"])
+            naming_conflict = current and snapshot.get('name_reserved') and current['client'].get('subId') != snapshot['sub_id']
+            if order['kind'] != 'renew' and not stored['target_json'] and (not current or naming_conflict):
+                highest = await panel.highest_client_number(self.store.settings.client_name_prefix)
+                for attempt in range(10):
+                    snapshot = self.store.reserve_client_name(order['id'],highest,advance=attempt > 0 or bool(naming_conflict))
+                    email = snapshot['email']
+                    current = await panel.get_client(email)
+                    if not current or current['client'].get('subId') == snapshot['sub_id']:
+                        break
+                else:
+                    raise DomainError('تداخل هم‌زمان نام کاربران؛ ساخت به تلاش بعدی موکول شد.')
+            required = await self.target_inbounds(panel,server)
             if stored["target_json"]:
                 target = json.loads(stored["target_json"])
             elif order["kind"] == "renew":
-                if not current or server["inbound_id"] not in current["inboundIds"]:
+                if not current or not current.get('inboundIds'):
                     raise DomainError("کاربر سرویس در اینباند پنل پیدا نشد.")
                 target = client_payload(current["client"])
                 if target.get("subId") != snapshot["sub_id"]:
@@ -100,11 +132,6 @@ class Provisioner:
                 target["expiryTime"] = max(now() * 1000, int(target["expiryTime"])) + int(snapshot["days"] * 86400000)
                 target["enable"] = True
             else:
-                inbound = await panel.inbound()
-                if not inbound.get("enable"):
-                    raise DomainError("اینباند انتخابی غیرفعال است.")
-                if inbound.get("protocol") not in {"vless", "vmess", "trojan", "shadowsocks", "hysteria", "tuic"}:
-                    raise DomainError("برای فروش، اینباند VLESS، VMess، Trojan، Shadowsocks، Hysteria یا TUIC انتخاب کنید.")
                 target = {
                     "email": email, "id": snapshot["client_id"], "password": snapshot["password"],
                     "auth": snapshot["password"], "subId": snapshot["sub_id"], "tgId": order["user_id"],
@@ -119,17 +146,20 @@ class Provisioner:
             if current:
                 if current["client"].get("subId") != snapshot["sub_id"]:
                     raise DomainError("تداخل شناسه کاربر؛ سفارش نیاز به بررسی دستی دارد.")
-                if server["inbound_id"] not in current["inboundIds"]:
+                if not server.get('all_inbounds') and server["inbound_id"] not in current["inboundIds"]:
                     raise DomainError("کاربر به اینباند سفارش متصل نیست.")
+                missing = sorted(set(required) - set(current.get('inboundIds',[])))
+                if missing:
+                    await panel.attach(email, missing)
                 if order["kind"] == "renew":
                     await panel.update(email, target)
                 # Retrying an ambiguous create: never overwrite a newly generated protocol secret.
             else:
                 if order["kind"] == "renew":
                     raise DomainError("سرویس اصلی حذف شده است؛ ساخت مجدد خودکار انجام نمی‌شود.")
-                await panel.add(target)
+                await panel.add(target,required)
             confirmed = await panel.get_client(email)
-            if not confirmed or server["inbound_id"] not in confirmed["inboundIds"]:
+            if not confirmed or not set(required).issubset(confirmed.get('inboundIds',[])):
                 raise PanelError("ساخت سرویس در پنل تأیید نشد.")
             client = confirmed["client"]
             if (client.get("subId") != snapshot["sub_id"] or not client.get("enable") or
@@ -182,6 +212,10 @@ class Provisioner:
             client = record["client"]
             if client.get("subId") != service["sub_id"]:
                 raise DomainError("شناسه سرویس تغییر کرده است؛ پشتیبانی را مطلع کنید.")
+            record = await self.attach_missing(panel,server,record)
+            client = record['client']
+            if client.get('subId') != service['sub_id']:
+                raise DomainError('شناسه سرویس هنگام اتصال اینباند تغییر کرد؛ بررسی پشتیبانی لازم است.')
             with self.db.transaction() as con:
                 con.execute("UPDATE services SET client_json=?,expires_at=?,total_bytes=?,used_bytes=?,enabled=?,synced_at=? WHERE id=?",
                             (json.dumps(client), int(client["expiryTime"]) // 1000, client["totalGB"],

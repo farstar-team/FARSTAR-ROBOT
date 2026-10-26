@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     app_name: str = "Farstar"
     bot_token: str = ""
     bot_username: str = ""
+    client_name_prefix: str = Field(default='FARSTAR_', pattern=r'^[A-Za-z][A-Za-z0-9_-]{0,39}$')
+    client_number_start: int = Field(default=405, ge=1, le=1000000000)
     admin_ids: list[int] = Field(default_factory=list)
     admin_username: str = "admin"
     admin_password: str = ""
