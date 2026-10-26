@@ -1,0 +1,5 @@
+# Replace shop.example.com with your own domain; point its DNS at this server.
+shop.example.com {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8080
+}

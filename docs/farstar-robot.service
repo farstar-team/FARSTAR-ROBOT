@@ -1,0 +1,34 @@
+[Unit]
+Description=Farstar VPN shop (isolated from 3x-ui)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=farstarbot
+Group=farstarbot
+WorkingDirectory=/opt/farstar-robot/current
+EnvironmentFile=/etc/farstar-robot/bot.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/farstar-robot/venv/bin/python -m farstar run
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=40
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/farstar-robot
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+Nice=10
+CPUQuota=30%
+MemoryHigh=256M
+MemoryMax=384M
+TasksMax=128
+OOMScoreAdjust=500
+
+[Install]
+WantedBy=multi-user.target

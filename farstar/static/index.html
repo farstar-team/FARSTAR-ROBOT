@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#101512"><title>Farstar · مدیریت فروش</title>
+  <link rel="icon" type="image/svg+xml" href="/static/mark.svg">
+  <link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script>
+</head>
+<body>
+<div id="login" class="login-screen" hidden>
+  <div class="login-art"><div class="orb"></div><div class="login-brand">FARSTAR<span>VPN COMMERCE, REIMAGINED.</span></div><p>یک اتصال ساده.<br>یک کسب‌وکار بی‌مرز.</p><div class="login-caption">از اولین خرید تا تمدید بعدی، کنار شما.</div></div>
+  <form id="login-form" class="login-form"><div class="brand-mark">✦</div><span class="eyebrow">FARSTAR CONTROL CENTER</span><h1>خوش برگشتی.</h1><p class="muted">برای مدیریت فروشگاهت وارد شو.</p><label>نام کاربری<input name="username" autocomplete="username" dir="ltr" required value="admin"></label><label>رمز عبور<input name="password" type="password" autocomplete="current-password" dir="ltr" required></label><div id="login-error" class="error" role="alert"></div><button class="primary" type="submit">ورود به پنل <span>←</span></button><small>رمز ورود در فایل .env پروژه قرار دارد.</small></form>
+</div>
+<div id="shell" hidden>
+  <aside id="sidebar"><a class="brand" href="#overview"><span class="brand-mark">✦</span><span>farstar<span class="brand-sub">مرکز مدیریت فروش</span></span></a><div class="workspace"><span class="workspace-logo">F</span><div><b id="shop-name">فروشگاه فرستار</b><small>فضای کاری شما</small></div><span class="workspace-arrow">⌄</span></div><span class="nav-label">فضای مدیریت</span><nav id="nav"></nav><div class="sidebar-bottom"><div class="connection"><span class="dot"></span><div><b>هماهنگ با پنل ثنایی</b><small>3x-ui 3.11.0 · API</small></div></div><a href="#settings" class="sidebar-settings" data-icon="settings">تنظیمات و راه‌اندازی</a><button id="logout" class="profile"><span class="avatar">A</span><span><b>مدیر فروشگاه</b><small>خروج از حساب ↗</small></span><span class="more">•••</span></button></div></aside>
+  <div class="main-wrap"><header class="topbar"><div class="breadcrumb"><button id="mobile-menu" class="icon-button" aria-label="بازکردن منو">☰</button><span>فضای کاری</span><span>/</span><b id="crumb">نمای کلی</b></div><div class="topbar-end"><span id="demo-badge" class="badge amber" hidden>نسخه نمایشی</span><span id="clock" class="clock"></span><button id="refresh" class="icon-button" title="بروزرسانی" data-icon="refresh"></button><button id="notifications" class="icon-button notification" title="تیکت‌های باز" data-icon="bell"></button><span class="avatar small">A</span></div></header><main id="main" aria-live="polite"></main><footer><span>با دقت، برای اتصال بهتر.</span><span dir="ltr">FARSTAR © 2026 <span class="footer-star">✦</span></span></footer></div>
+</div>
+<dialog id="modal"><div class="modal-header"><h2 id="modal-title"></h2><button id="modal-close" class="icon-button" aria-label="بستن">×</button></div><div id="modal-body"></div></dialog>
+<div id="toast" role="status" hidden></div>
+</body></html>

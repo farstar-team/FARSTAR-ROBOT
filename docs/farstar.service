@@ -1,0 +1,23 @@
+[Unit]
+Description=Farstar VPN storefront
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=farstar
+Group=farstar
+WorkingDirectory=/opt/farstar
+ExecStart=/opt/farstar/.venv/bin/python -m farstar run
+Restart=always
+RestartSec=10
+TimeoutStopSec=40
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/farstar/data
+
+[Install]
+WantedBy=multi-user.target
