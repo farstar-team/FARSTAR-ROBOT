@@ -25,8 +25,8 @@ ReadWritePaths=/var/lib/farstar-robot
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 Nice=10
 CPUQuota=30%
-MemoryHigh=256M
-MemoryMax=384M
+MemoryHigh=448M
+MemoryMax=512M
 TasksMax=128
 OOMScoreAdjust=500
 

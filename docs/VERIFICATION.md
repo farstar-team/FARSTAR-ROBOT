@@ -1,5 +1,9 @@
 # Verification — 2026-10-26
 
+## Operational correction — 2026-10-27
+
+The original 256 MiB soft memory threshold stalled the running Python process after its working set reached about 295 MiB. Linux reported `mem_cgroup_handle_over_high`, over 1.6 million high-memory events and approximately 84% memory stall time despite ample free host RAM. The app remained active while HTTP and Telegram handling stalled. The service limits were changed persistently to `MemoryHigh=448M`, `MemoryMax=512M`, leaving CPU and isolation controls in place. The same process recovered without restart, HTTP responded again and the nine pending Telegram updates drained to zero. No panel/Xray restart or client configuration change was needed. The service template now carries the corrected limits. Size the limits to the real working set, particularly when rendering receipt images and branded QR cards; a low soft threshold can stall a service without an OOM event.
+
 ## Version 1.2.0
 
 - **74 tests passed.** Additional coverage includes concurrent direct-card approvals with unchanged wallet balance, a review hold that blocks expiration/cancellation/second payment, receipt rejection and resubmission, exact amount/ownership and duplicate-image checks, the first administrator photo notification with inline approve/reject actions, native checkout through photo upload, unauthorized approval rejection and provisioning/delivery after approval.
