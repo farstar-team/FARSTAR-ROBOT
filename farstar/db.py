@@ -123,6 +123,9 @@ CREATE TABLE IF NOT EXISTS service_labels (
 CREATE TABLE IF NOT EXISTS service_alert_state (
  service_id TEXT PRIMARY KEY REFERENCES services(id), epoch TEXT NOT NULL, level INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS broadcast_contacts (
+ user_id INTEGER PRIMARY KEY CHECK(user_id>0), source_sha256 TEXT NOT NULL, imported_at INTEGER NOT NULL
+);
 """
 
 

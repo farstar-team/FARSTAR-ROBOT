@@ -481,14 +481,9 @@ class Store:
                 raise DomainError("فقط سفارش ناموفق قابل تلاش دوباره است.")
             audit(con, "admin", "order.retry", order_id)
 
-    def broadcast(self, body):
-        key = uid()
-        with self.db.transaction() as con:
-            users = con.execute("SELECT id FROM users WHERE banned=0").fetchall()
-            for user in users:
-                notify(con, user["id"], escape(body), f"broadcast:{key}:{user['id']}")
-            audit(con, "admin", "broadcast", key, {"recipients": len(users)})
-        return len(users)
+    def broadcast(self, body, campaign_id=None):
+        from .broadcasts import queue
+        return queue(self.db, body, campaign_id)
 
     def stats(self):
         counts = self.db.one("""SELECT

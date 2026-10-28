@@ -293,7 +293,8 @@ class Worker:
         from aiogram.types import BufferedInputFile
         from .qr import subscription_card
         from .receipt_messages import receipt_message
-        for row in self.db.all("SELECT * FROM outbox WHERE sent_at IS NULL AND attempts<10 AND next_attempt<=? ORDER BY id LIMIT 25", (now(),)):
+        for row in self.db.all("SELECT * FROM outbox WHERE sent_at IS NULL AND attempts<10 AND next_attempt<=? "
+                               "ORDER BY CASE WHEN dedupe LIKE 'broadcast:%' THEN 1 ELSE 0 END,id LIMIT 25", (now(),)):
             try:
                 buttons = [[InlineKeyboardButton(text='⌂ منوی اصلی',callback_data='menu:home')]]
                 if row['dedupe'].startswith('delivery:'):

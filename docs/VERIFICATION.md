@@ -1,5 +1,11 @@
 # Verification — 2026-10-26
 
+## Version 1.3.1 — 2026-10-28
+
+- **116 tests passed**, with Ruff passing. New tests cover deduplicated legacy contacts without creating user accounts or changing wallets, validation before writes, retained administrator bans, idempotent campaign confirmation, stale-preview rejection, role checks, delivery progress and priority for transactional messages during a broadcast.
+- The additive `broadcast_contacts` table stores only numeric recipient IDs, a source checksum and import time. Imported contact lists are private deployment data and never packaged or pushed to GitHub. Financial columns from third-party exports are outside this import.
+- Native previews show the recipient count and require the matching preview's confirmation. Queue status counts Telegram acceptance, not message reads. Rate-limit handling and bounded delivery batches remain in force.
+
 ## Version 1.3.0 — 2026-10-28
 
 - **103 tests passed**; Ruff and JavaScript syntax checks passed. Existing purchase, exact-price receipt approval, idempotent provisioning, branded QR and runtime recovery tests remain included.

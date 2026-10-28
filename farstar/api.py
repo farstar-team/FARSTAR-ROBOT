@@ -26,6 +26,7 @@ from .security import digest, new_session, rate_limit
 from .services import Worker
 from .store import DomainError, Store, audit, now
 from .experience import attention, sales_report, storage_status
+from .broadcasts import audience as broadcast_audience, status as broadcast_status
 
 STATIC = Path(__file__).parent / "static"
 
@@ -527,6 +528,14 @@ def create_app(settings, run_background=True):
         if settings.demo:
             raise DomainError("ارسال همگانی در حالت نمایشی غیرفعال است.")
         return {"recipients": store.broadcast(data.text)}
+
+    @app.get('/api/broadcast-audience')
+    def broadcast_audience_info(auth: Auth):
+        return {'recipients':broadcast_audience(db)}
+
+    @app.get('/api/broadcast-status')
+    def broadcast_status_info(auth: Auth, campaign_id: str | None = None):
+        return broadcast_status(db,campaign_id)
 
     @app.get("/api/audit")
     def audits(auth: Auth, offset: int = 0):

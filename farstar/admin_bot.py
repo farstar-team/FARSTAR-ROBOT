@@ -11,9 +11,10 @@ from pathlib import Path
 from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from aiogram.exceptions import TelegramAPIError
 
-from .store import DomainError, audit, now
+from .store import DomainError, audit, now, uid
 from .receipt_messages import receipt_message
 from .experience import attention, sales_report, storage_status
+from .broadcasts import audience as broadcast_audience, status as broadcast_status
 
 
 def keys(rows):
@@ -47,6 +48,19 @@ class AdminBot:
     def plans(self):
         return self.db.all('SELECT p.*,s.name server_name FROM plans p JOIN servers s ON s.id=p.server_id ORDER BY p.id')
 
+    async def broadcast_preview(self, actor, text):
+        self.admin(actor)
+        if not 1<=len(text.strip())<=3000:
+            raise DomainError('متن پیام حداکثر ۳۰۰۰ نویسه باشد.')
+        campaign_id = uid()
+        self.store.set_state(actor,'admin:broadcast-confirm',{'text':text.strip(),'campaign_id':campaign_id})
+        count = broadcast_audience(self.db)
+        markup = keys([[('📣 تأیید ارسال', 'adm:broadcastconfirm:'+campaign_id)],
+                       [('✏️ ویرایش متن','adm:broadcast')],BACK])
+        markup.inline_keyboard[0][0].style='success'
+        return await self.send(actor,f'📣 <b>پیش‌نمایش پیام همگانی</b>\nگیرندگان فعلی: <b>{count:,}</b> نفر · شامل فهرست قدیمی\n\n'
+                               +escape(text.strip())+'\n\nبا دکمه تأیید، ارسال مرحله‌ای شروع می‌شود. گزارش ارسال در مدیریت در دسترس است.',markup)
+
     async def home(self, actor):
         self.admin(actor)
         self.store.set_state(actor)
@@ -57,6 +71,7 @@ class AdminBot:
                 [('🌐 سرورها', 'adm:servers'), ('📡 سرویس‌ها','adm:services')],
                 [('💳 شماره کارت', 'adm:card'), ('⚙️ تنظیمات فروشگاه','adm:settings')],
                 [('🎟 تخفیف و هدیه', 'adm:codes'), ('📣 پیام همگانی', 'adm:broadcast')],
+                [('📬 گزارش پیام همگانی','adm:broadcaststatus')],
                 [('💽 فضای سرور', 'adm:storage'), ('💾 پشتیبان ربات', 'adm:backup')],
                 [('⌂ منوی مشتری', 'menu:home')]]
         markup = keys(rows)
@@ -361,14 +376,27 @@ class AdminBot:
             await self.send(actor, f'در یک پیام بفرست:\n<code>CODE {unit} تعداد روزاعتبار</code>\nنمونه: <code>WELCOME 10 100 30</code>', keys([BACK]))
         elif action == 'broadcast':
             self.store.set_state(actor, 'admin:broadcast')
-            await self.send(actor, 'متن پیام همگانی را بفرست؛ قبل از ارسال تأیید می‌گیریم.', keys([BACK]))
+            await self.send(actor, f'گیرندگان فعلی: {broadcast_audience(self.db):,} نفر، شامل فهرست قدیمی.\n'
+                            'متن پیام همگانی را بفرست تا پیش‌نمایش آماده شود.', keys([BACK]))
         elif action == 'broadcastconfirm':
             u = self.store.user(actor)
             if u['state'] != 'admin:broadcast-confirm':
                 raise DomainError('این پیام قبلاً ارسال یا لغو شده است.')
-            count = self.store.broadcast(json.loads(u['state_data'])['text'])
+            data=json.loads(u['state_data'])
+            campaign_id=data.get('campaign_id') or uid()
+            if data.get('campaign_id') and (len(parts)<3 or parts[2]!=campaign_id):
+                raise DomainError('این پیش‌نمایش قدیمی است؛ پیش‌نمایش تازه را تأیید کن.')
+            count = self.store.broadcast(data['text'],campaign_id)
             self.store.set_state(actor)
-            await self.send(actor, f'پیام برای {count} کاربر در صف ارسال قرار گرفت.', keys([BACK]))
+            await self.send(actor, f'پیام برای {count:,} گیرنده در صف ارسال قرار گرفت.\n'
+                            'خریدها، فیش‌ها و تحویل اشتراک در اولویت ارسال می‌مانند.',
+                            keys([[('📬 گزارش ارسال','adm:broadcaststatus:'+campaign_id)],BACK]))
+        elif action == 'broadcaststatus':
+            report=broadcast_status(self.db,parts[2] if len(parts)>2 else None)
+            await self.send(actor,f"📬 <b>گزارش پیام همگانی</b>\nکل گیرندگان: {report['total']:,}\n"
+                            f"✅ ارسال موفق: {report['sent']:,}\n⏳ در صف یا منتظر تلاش دوباره: {report['pending']:,}\n"
+                            f"⚪ ارسال ناموفق: {report['failed']:,}\n\nارسال موفق یعنی تلگرام پیام را پذیرفته؛ به معنی خوانده‌شدن نیست.",
+                            keys([[('🔄 بروزرسانی گزارش','adm:broadcaststatus:'+report['id'])],BACK]))
         elif action == 'backup':
             handle = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
             path = Path(handle.name)
@@ -462,8 +490,7 @@ class AdminBot:
         elif state == 'admin:broadcast':
             if len(text)>3000:
                 raise DomainError('متن حداکثر ۳۰۰۰ نویسه باشد.')
-            self.store.set_state(actor,'admin:broadcast-confirm',{'text':text})
-            await self.send(actor,'پیش‌نمایش پیام همگانی:\n\n'+escape(text),keys([[('📣 تأیید ارسال','adm:broadcastconfirm')],BACK]))
+            await self.broadcast_preview(actor,text)
         else:
             await self.send(actor,'از دکمه تأیید یا بازگشت استفاده کن.',keys([BACK]))
         return True
