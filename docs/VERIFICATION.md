@@ -60,3 +60,12 @@ The original 256 MiB soft memory threshold stalled the running Python process af
 - Upstream API checked against the official v3.11.0 OpenAPI, controller and model sources, including ClientRecord-to-Client type conversions. Automated HTTP integration tests use mocked transport; Telegram tests use an aiogram session stub. Real deployment separately verified the bot connection and read-only panel API. No live payment or paid customer account was created as a test.
 
 One non-failing warning is emitted by the installed Starlette TestClient about a future HTTP client migration. It does not affect the passing tests or the application's production HTTP client.
+# نسخه ۱٫۴: توزیع با لایسنس
+
+تست‌های اضافه‌شده در `tests/test_distribution.py` امضای لایسنس، اتصال به ربات/نصب/ماشین، مهلت قطعی، توقف فروش و ادامه تحویل سفارش پرداخت‌شده، نبود مسیر صدور در نسخه عمومی، شخصی‌سازی امن، افزودن پنل از تلگرام، شش پروتکل و فیلتر نود را پوشش می‌دهند. نصاب در محیط فایل موقت با مرزهای سیستم‌عامل و شبکه شبیه‌سازی‌شده آزمایش می‌شود؛ روی سرور دارای مشتری به عنوان نصب تازه اجرا نمی‌شود. آزمون‌های صادرکننده جداگانه و خصوصی‌اند و در توزیع عمومی قرار ندارند.
+
+```sh
+python -m pytest -q
+python -m ruff check farstar tests scripts/install.py
+```
+

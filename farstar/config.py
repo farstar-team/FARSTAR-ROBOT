@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     trial_hours: int = Field(default=24, ge=1, le=72)
     worker_interval: int = Field(default=10, ge=2)
     backup_hours: int = Field(default=24, ge=1)
+    license_required: bool = True
+    license_installation_id: str = ''
+    license_installation_token: str = ''
+    # The issuer module and signing key are never part of the public distribution.
+    license_issuer: bool = False
+    license_key_path: str = ''
+    license_release_path: str = ''
+    tls_credentials: bool = False
 
     @field_validator("currency")
     @classmethod

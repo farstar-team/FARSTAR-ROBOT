@@ -10,7 +10,7 @@ from farstar.store import Store
 @pytest.fixture
 def settings(tmp_path):
     return Settings(_env_file=None, database_path=tmp_path / "test.db", secret_key="test-secret-" * 6,
-                    admin_password="test-password-long", admin_ids=[999], currency="XTR")
+                    admin_password="test-password-long", admin_ids=[999], currency="XTR", license_required=False)
 
 
 @pytest.fixture

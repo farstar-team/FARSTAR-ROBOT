@@ -130,7 +130,10 @@ def mount_miniapps(app, store, worker, static):
 
     @app.get('/mini-api/context')
     def context():
-        return {'demo': settings.demo, 'name': settings.app_name, 'bot_username': settings.bot_username}
+        from .branding import branding
+        brand = branding(store).data()
+        return {'demo': settings.demo, 'name': settings.app_name, 'bot_username': settings.bot_username,
+                'logo_url': brand['logo_url'], 'license_issuer': bool(getattr(store, 'license_authority', None))}
 
     @app.post('/mini-api/demo-login')
     def demo_login(data: RoleInput, request: Request, response: Response):
@@ -189,7 +192,8 @@ def mount_miniapps(app, store, worker, static):
     @app.get('/mini-api/terms')
     def terms(auth: Customer):
         from .bot import TERMS
-        return {'text': settings.terms_text or TERMS}
+        from .branding import branding
+        return {'text': branding(store).text('terms') or TERMS}
 
     @app.post('/mini-api/terms/accept')
     def accept_terms(auth: Customer):

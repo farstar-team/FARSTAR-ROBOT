@@ -154,11 +154,24 @@ class Store:
         result = self.db.one("SELECT * FROM servers WHERE id=?", (server_id,))
         if not result:
             raise DomainError("سرور پیدا نشد.")
+        for key in ('protocols', 'node_ids'):
+            result[key] = json.loads(result.get(key) or '[]')
         return result
 
     def save_server(self, data, server_id=None, actor="admin"):
         values = dict(data)
         credentials = values.pop("credentials", None)
+        from .panels import PROTOCOLS
+        if values.get('panel_type', 'sanaei') != 'sanaei':
+            raise DomainError('در حال حاضر فقط پنل ثنایی پشتیبانی می‌شود.')
+        for key in ('protocols', 'node_ids'):
+            if key in values:
+                items = values[key]
+                if (not isinstance(items, list) or len(items) > 100
+                        or (key == 'protocols' and any(p not in PROTOCOLS for p in items))
+                        or (key == 'node_ids' and any(type(n) is not int or n < 0 for n in items))):
+                    raise DomainError('فیلتر پروتکل یا نود معتبر نیست.')
+                values[key] = json.dumps(sorted(set(items)))
         with self.db.transaction() as con:
             if server_id:
                 existing = con.execute("SELECT * FROM servers WHERE id=?", (server_id,)).fetchone()
@@ -167,7 +180,7 @@ class Store:
                 # Changing an inbound or subscription host after selling would break existing services.
                 in_use = con.execute("SELECT 1 FROM services WHERE server_id=? UNION SELECT 1 FROM orders WHERE server_id=? LIMIT 1",
                                      (server_id, server_id)).fetchone()
-                if in_use and any(values.get(k, existing[k]) != existing[k] for k in ("inbound_id", "subscription_url")):
+                if in_use and any(values.get(k, existing[k]) != existing[k] for k in ("inbound_id", "subscription_url", "panel_type", "protocols", "node_ids")):
                     raise DomainError("این سرور سفارش دارد؛ برای تغییر اینباند یا آدرس اشتراک، سرور تازه بسازید.")
                 if credentials:
                     values["credentials"] = self.vault.seal(credentials)
@@ -226,6 +239,8 @@ class Store:
             audit(con, actor, 'code.create', code)
 
     def create_order(self, user_id, plan_id=None, coupon="", service_id=None, trial=False):
+        from .licensing import client
+        client(self).require_sales()
         timestamp = now()
         order_id = uid()
         with self.db.transaction() as con:
@@ -358,6 +373,8 @@ class Store:
             audit(con, user_id, "order.cancel", order_id)
 
     def precheckout(self, order_id, user_id, amount, currency):
+        from .licensing import client
+        client(self).require_sales()
         with self.db.transaction() as con:
             row = con.execute("SELECT o.*,u.banned FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=? AND o.user_id=?",
                               (order_id, user_id)).fetchone()

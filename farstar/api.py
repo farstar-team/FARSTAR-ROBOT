@@ -27,6 +27,8 @@ from .services import Worker
 from .store import DomainError, Store, audit, now
 from .experience import attention, sales_report, storage_status
 from .broadcasts import audience as broadcast_audience, status as broadcast_status
+from .licensing import client as license_client
+from .branding import branding
 
 STATIC = Path(__file__).parent / "static"
 
@@ -57,6 +59,9 @@ class ServerInput(Input):
     trial: bool = True
     all_inbounds: bool = False
     credentials: Credentials | None = None
+    panel_type: str = Field(default='sanaei', pattern=r'^sanaei$')
+    protocols: list[str] = Field(default_factory=list, max_length=6)
+    node_ids: list[int] = Field(default_factory=list, max_length=100)
 
     @field_validator("url", "subscription_url")
     @classmethod
@@ -129,10 +134,24 @@ class CodeInput(Input):
         return self
 
 
+class BrandInput(Input):
+    app_name: str | None = Field(default=None, max_length=64)
+    texts: dict[str, str] = Field(default_factory=dict, max_length=30)
+
+
+class LogoInput(Input):
+    image: str = Field(max_length=470000)
+
+
 def create_app(settings, run_background=True):
     db = Database(settings.database_path)
     db.initialize()
     store = Store(db, settings)
+    branding(store)
+    if settings.license_issuer:
+        # This private extension is deployed only on the FARSTAR owner's server.
+        from farstar_authority import Authority
+        store.license_authority = Authority(store)
     worker = Worker(store)
     bot = None
     state = {"telegram": "disabled", "telegram_error": None,'background_tasks_ok':True}
@@ -205,6 +224,7 @@ def create_app(settings, run_background=True):
         if run_background:
             tasks.append(asyncio.create_task(worker.run(),name='farstar-worker'))
             tasks.append(asyncio.create_task(memory_maintenance(state),name='farstar-memory'))
+            tasks.append(asyncio.create_task(license_client(store).run(), name='farstar-license'))
             if settings.bot_token and not settings.demo:
                 tasks.append(asyncio.create_task(run_bot(),name='farstar-telegram'))
         watchdog=asyncio.create_task(runtime_watchdog(tasks,state),name='farstar-watchdog') if run_background else None
@@ -225,7 +245,8 @@ def create_app(settings, run_background=True):
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
-        maximum = 6 * 1024 * 1024 if request.url.path == '/mini-api/receipts' else 65536
+        maximum = (6 * 1024 * 1024 if request.url.path == '/mini-api/receipts' else
+                   500000 if request.url.path == '/api/branding/logo' else 65536)
         if request.headers.get("content-length", "0").isdigit() and int(request.headers.get("content-length", "0")) > maximum:
             return JSONResponse({"detail": "درخواست بیش از حد بزرگ است."}, status_code=413)
         response = await call_next(request)
@@ -271,6 +292,45 @@ def create_app(settings, run_background=True):
 
     Auth = Annotated[dict, Depends(authorize)]
 
+    if getattr(store, 'license_authority', None):
+        from farstar_authority import mount
+        mount(app, store.license_authority, authorize, worker)
+
+    @app.get('/api/license')
+    def license_status(auth: Auth):
+        return license_client(store).status()
+
+    @app.post('/api/license/refresh')
+    async def license_refresh(auth: Auth):
+        if not rate_limit(db, 'license-refresh', 3, 60):
+            raise HTTPException(429, 'کمی بعد تلاش کنید.')
+        return await license_client(store).refresh()
+
+    @app.get('/api/branding')
+    def brand_settings(auth: Auth):
+        return branding(store).data()
+
+    @app.put('/api/branding')
+    def brand_update(data: BrandInput, auth: Auth):
+        return branding(store).save(data.app_name, data.texts, auth.get('user_id', 'admin'))
+
+    @app.post('/api/branding/logo')
+    def brand_logo(data: LogoInput, auth: Auth):
+        import base64
+        try:
+            raw = base64.b64decode(data.image, validate=True)
+        except ValueError as exc:
+            raise HTTPException(400, 'فرمت عکس معتبر نیست.') from exc
+        branding(store).save_logo(raw, auth.get('user_id', 'admin'))
+        return {'ok': True}
+
+    @app.get('/brand/logo')
+    def brand_image():
+        raw = branding(store).logo()
+        if not raw:
+            return FileResponse(STATIC / 'mark.svg', media_type='image/svg+xml')
+        return Response(raw, media_type='image/png')
+
     @app.get("/health")
     def health():
         db.one("SELECT 1")
@@ -311,6 +371,7 @@ def create_app(settings, run_background=True):
     @app.get("/api/meta")
     def meta(auth: Auth):
         return {"name": settings.app_name, "version": __version__, "demo": settings.demo, "currency": settings.currency,
+                'license_issuer': bool(getattr(store, 'license_authority', None)),
                 "telegram": state["telegram"], "telegram_error": state["telegram_error"],
                 'telegram_last_poll':state.get('telegram_last_poll'),'telegram_last_update':state.get('telegram_last_update'),
                 'telegram_last_send':state.get('telegram_last_send'),'telegram_messages_sent':state.get('telegram_messages_sent',0),
@@ -363,9 +424,21 @@ def create_app(settings, run_background=True):
 
     @app.get("/api/servers")
     def servers(auth: Auth):
-        return db.all("""SELECT s.id,s.name,s.location,s.url,s.inbound_id,s.subscription_url,s.capacity,s.active,s.trial,s.all_inbounds,
+        rows = db.all("""SELECT s.id,s.name,s.location,s.url,s.inbound_id,s.subscription_url,s.capacity,s.active,s.trial,s.all_inbounds,s.panel_type,s.protocols,s.node_ids,
              (SELECT COUNT(*) FROM services v WHERE v.server_id=s.id AND v.expires_at>?) clients
              FROM servers s ORDER BY s.id""", (now(),))
+        import json
+        for row in rows:
+            for key in ('protocols', 'node_ids'):
+                row[key] = json.loads(row[key])
+        return rows
+
+    @app.get('/api/servers/{server_id}/inbounds')
+    async def server_inbounds(server_id: int, auth: Auth):
+        server = store.server(server_id)
+        async with worker.provisioner.panel(server) as panel:
+            rows = await panel.inbounds()
+        return [{key: row.get(key) for key in ['id', 'remark', 'protocol', 'enable', 'nodeId', 'port']} for row in rows]
 
     @app.post("/api/servers")
     def server_create(data: ServerInput, auth: Auth):

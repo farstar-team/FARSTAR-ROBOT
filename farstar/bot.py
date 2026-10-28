@@ -20,6 +20,7 @@ from .services import GIB, subscription
 from .qr import subscription_card
 from .store import DomainError, now
 from .experience import order_progress, service_health
+from .branding import branding
 
 TERMS = (
     "📃 <b>قوانین خرید</b>\n\n"
@@ -44,16 +45,19 @@ def build_dispatcher(store, provisioner, bot):
     router = Router()
     dp = Dispatcher()
     db, settings = store.db, store.settings
-    terms = escape(settings.terms_text) if settings.terms_text else TERMS
+    brand = branding(store)
+
+    def terms():
+        return escape(brand.text('terms')) if brand.text('terms') else TERMS
 
     def money(amount):
         return f"{amount:,} {'⭐ استار' if settings.currency == 'XTR' else 'تومان'}"
 
     def menu(user_id):
-        rows = [[('🛍 خرید اشتراک', 'menu:buy'), ('📡 سرویس‌های من', 'menu:services')],
-                [('💳 کیف پول و پرداخت', 'menu:wallet'), ('📱 آموزش Happ', 'menu:help')],
-                [('🎁 دعوت دوستان', 'menu:referrals'), ('🧾 سفارش‌های من', 'menu:orders')],
-                [('💬 پشتیبانی', 'menu:support'), ('📃 قوانین', 'menu:terms')]]
+        rows = [[(brand.text('buy_button'), 'menu:buy'), (brand.text('services_button'), 'menu:services')],
+                [(brand.text('wallet_button'), 'menu:wallet'), (brand.text('help_button'), 'menu:help')],
+                [('🎁 دعوت دوستان', 'menu:referrals'), (brand.text('orders_button'), 'menu:orders')],
+                [(brand.text('support_button'), 'menu:support'), ('📃 قوانین', 'menu:terms')]]
         rows.append([('🔔 تنظیم هشدارهای اشتراک', 'preferences')])
         if settings.trial_enabled:
             rows.insert(2, [('🧪 دریافت تست رایگان', 'menu:trial')])
@@ -66,6 +70,8 @@ def build_dispatcher(store, provisioner, bot):
             if settings.admin_mini_app_url:
                 result.inline_keyboard.append([InlineKeyboardButton(text='🧩 مینی‌اپ مدیر',
                                                 web_app=WebAppInfo(url=settings.admin_mini_app_url))])
+        if getattr(store, 'license_authority', None):
+            result.inline_keyboard.append([InlineKeyboardButton(text='🚀 ربات خودت را بساز · لایسنس رایگان', callback_data='license:home')])
         return result
 
     async def send(chat_id, text, reply_markup=None):
@@ -136,9 +142,9 @@ def build_dispatcher(store, provisioner, bot):
             await send(user_id, '✦ منوی جدید Farstar آماده است.', ReplyKeyboardRemove())
             with db.transaction() as con:
                 con.execute('INSERT OR IGNORE INTO meta VALUES (?,?)', (f'inline-menu:{user_id}', '1'))
-        await send(user_id, f"✦ <b>{escape(settings.app_name)}</b>\n\nاشتراکت، پرداختت و پشتیبانی؛ همه همین‌جاست.\nاز دکمه‌های زیر انتخاب کن.", menu(user_id))
+        await send(user_id, f"✦ <b>{escape(settings.app_name)}</b>\n\n{escape(brand.text('welcome'))}", menu(user_id))
         if not store.user(user_id)["terms_at"]:
-            await send(user_id, terms, keyboard([[('قوانین را خواندم و می‌پذیرم ✓', 'terms:accept')]]))
+            await send(user_id, terms(), keyboard([[('قوانین را خواندم و می‌پذیرم ✓', 'terms:accept')]]))
 
     async def show_plans(user_id, service_id=None):
         plans = store.plans()
@@ -250,7 +256,7 @@ def build_dispatcher(store, provisioner, bot):
     async def support(user_id):
         tickets = db.all("SELECT * FROM tickets WHERE user_id=? ORDER BY updated_at DESC LIMIT 10", (user_id,))
         keys = [[("✍️ تیکت تازه", "ticket:new")]] + [[(f"#{t['id']} · {t['subject'][:40]}", f"ticket:{t['id']}")] for t in tickets]
-        await send(user_id, "💬 <b>پشتیبانی</b>\nمشکل اتصال یا پرداختت را اینجا بنویس؛ پاسخ در همین ربات می‌رسد.", keyboard(keys))
+        await send(user_id, '💬 <b>پشتیبانی</b>\n' + escape(brand.text('support')), keyboard(keys))
 
     async def referrals(user_id):
         me = await bot.get_me()
@@ -299,7 +305,12 @@ def build_dispatcher(store, provisioner, bot):
             await query.answer()
             parts = data.split(":")
             action = parts[0]
-            if action == 'adm':
+            if action in {'license', 'licadm'}:
+                issuer = getattr(store, 'license_authority', None)
+                if not issuer:
+                    raise DomainError('مرجع دریافت لایسنس: @FARSTAR_VPN_BOT')
+                await issuer.callback(user_id, data, send)
+            elif action == 'adm':
                 await admin.callback(query)
             elif action == 'guide':
                 await send_guide(bot, store, user_id, parts[1])
@@ -315,11 +326,11 @@ def build_dispatcher(store, provisioner, bot):
                 elif selected == 'wallet':
                     await show_wallet(user_id)
                 elif selected == 'help':
-                    await send(user_id, '📱 <b>راهنمای Happ</b>\nدستگاهت را انتخاب کن؛ لینک رسمی دانلود و GIF آموزش مخصوص همان دستگاه را می‌فرستم.', device_keyboard())
+                    await send(user_id, '📱 <b>راهنمای Happ</b>\n' + escape(brand.text('help')), device_keyboard())
                 elif selected == 'support':
                     await support(user_id)
                 elif selected == 'terms':
-                    await send(user_id, terms, keyboard([[('قوانین را می‌پذیرم ✓', 'terms:accept')]]))
+                    await send(user_id, terms(), keyboard([[('قوانین را می‌پذیرم ✓', 'terms:accept')]]))
                 elif selected == 'trial':
                     await show_order(store.create_order(user_id, trial=True))
                 elif selected == 'referrals':
@@ -369,7 +380,7 @@ def build_dispatcher(store, provisioner, bot):
                            f"<code>{escape(settings.card_number)}</code>\nبه نام {escape(settings.card_holder)}\n"
                            f"سفارش: <code>{order['id']}</code>\n\n۲. دکمه سبز زیر را بزن و عکس فیش را انتخاب کن. "
                            'همچنین می‌توانی از گیره 📎 تلگرام، عکس را همین‌جا بفرستی.\n\n'
-                           '۳. بعد از تأیید مدیر، اشتراک با لینک و QR مستقیم ارسال می‌شود.', markup)
+                           '۳. بعد از تأیید مدیر، اشتراک با لینک و QR مستقیم ارسال می‌شود.\n\n' + escape(brand.text('payment_note')), markup)
             elif action == 'preferences':
                 if len(parts) > 1:
                     pref = parts[1]
@@ -482,7 +493,7 @@ def build_dispatcher(store, provisioner, bot):
                 await home(user_id)
                 return
             if command == "/terms":
-                await send(user_id, terms, keyboard([[('قوانین را می‌پذیرم ✓', 'terms:accept')]]))
+                await send(user_id, terms(), keyboard([[('قوانین را می‌پذیرم ✓', 'terms:accept')]]))
                 return
             if command in {"/support", "/paysupport"} or text == "💬 پشتیبانی":
                 store.set_state(user_id)

@@ -147,6 +147,11 @@ class Database:
             con.executescript(SCHEMA)
             if 'all_inbounds' not in {r['name'] for r in con.execute('PRAGMA table_info(servers)')}:
                 con.execute('ALTER TABLE servers ADD COLUMN all_inbounds INTEGER NOT NULL DEFAULT 0')
+            server_columns = {r['name'] for r in con.execute('PRAGMA table_info(servers)')}
+            for name, definition in [('panel_type',"TEXT NOT NULL DEFAULT 'sanaei'"),
+                                     ('protocols',"TEXT NOT NULL DEFAULT '[]'"), ('node_ids',"TEXT NOT NULL DEFAULT '[]'")]:
+                if name not in server_columns:
+                    con.execute(f'ALTER TABLE servers ADD COLUMN {name} {definition}')
             columns = {r['name'] for r in con.execute('PRAGMA table_info(receipts)')}
             for name, definition in [('order_id','TEXT REFERENCES orders(id)'),('file_unique_id','TEXT'),('image_hash','TEXT'),('reviewed_at','INTEGER')]:
                 if name not in columns:

@@ -4,9 +4,10 @@ import logging
 from html import escape
 from urllib.parse import quote
 
-from .panel import Panel, PanelError
+from .panel import PanelError
 from .store import DomainError, audit, credit, notify, now
 from .experience import housekeeping, queue_service_alert, service_alert_content
+from .panels import panel_factory, inbound_targets
 
 log = logging.getLogger(__name__)
 GIB = 1024 ** 3
@@ -39,7 +40,7 @@ def subscription(server, sub_id):
 
 
 class Provisioner:
-    def __init__(self, store, panel_factory=Panel):
+    def __init__(self, store, panel_factory=panel_factory):
         self.store = store
         self.db = store.db
         self.panel_factory = panel_factory
@@ -49,7 +50,7 @@ class Provisioner:
 
     async def target_inbounds(self, panel, server):
         rows = await panel.inbounds() if server.get('all_inbounds') else [await panel.inbound()]
-        ids = sorted({row['id'] for row in rows if row.get('enable') and row.get('protocol') in SUPPORTED_PROTOCOLS})
+        ids = inbound_targets(server, rows)
         if not ids:
             raise DomainError('اینباند فعال و سازگار برای این اشتراک پیدا نشد.')
         return ids
@@ -197,9 +198,11 @@ class Provisioner:
                         notify(con, user["referrer_id"], f"🎁 پاداش دعوت شما: {amount:,} به کیف پول اضافه شد.",
                                "referral:" + order["id"])
             link = subscription(server, client["subId"])
+            from .branding import branding
+            delivery_note = escape(branding(self.store).text('delivery_note'))
             notify(con, order["user_id"], f"✅ {'تمدید' if order['kind'] == 'renew' else 'فعال‌سازی'} سرویس انجام شد.\n"
                    f"شماره سفارش: <code>{order['id']}</code>\n\nلینک اشتراک:\n<code>{escape(link)}</code>\n\n"
-                   "از منوی «سرویس‌های من» QR و میزان مصرف را ببینید.", "delivery:" + order["id"])
+                   "از منوی «سرویس‌های من» QR و میزان مصرف را ببینید.\n" + delivery_note, "delivery:" + order["id"])
             self.store.admins(con, f"🛍 سفارش {order['id']} تحویل شد؛ مبلغ {order['price']:,} {order['currency']}",
                               "sale:" + order["id"])
             audit(con, "worker", "order.complete", order["id"])

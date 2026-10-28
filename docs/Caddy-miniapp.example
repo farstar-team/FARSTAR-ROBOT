@@ -17,7 +17,7 @@ https://{$MINI_HOST}:443 {
     handle /api/auth/* {
         respond 404
     }
-    @mini path /app /admin-app /mini-api/* /static/*
+    @mini path /app /admin-app /mini-api/* /static/* /brand/logo
     handle @mini {
         reverse_proxy 127.0.0.1:18080
     }

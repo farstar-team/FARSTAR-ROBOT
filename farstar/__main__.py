@@ -71,7 +71,12 @@ def main():
         seed(app.state.store)
         print("DEMO: sample database; no external connections. Login: admin / farstar-demo-2026")
     print(f"Dashboard: http://{settings.host}:{settings.port}")
-    uvicorn.run(app, host=settings.host, port=settings.port, workers=1, access_log=False)
+    tls = {}
+    if settings.tls_credentials:
+        import os
+        credentials = Path(os.environ['CREDENTIALS_DIRECTORY'])
+        tls = {'ssl_certfile': str(credentials / 'cert.pem'), 'ssl_keyfile': str(credentials / 'key.pem')}
+    uvicorn.run(app, host=settings.host, port=settings.port, workers=1, access_log=False, **tls)
 
 
 if __name__ == "__main__":

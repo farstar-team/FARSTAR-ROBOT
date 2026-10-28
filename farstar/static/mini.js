@@ -1,5 +1,6 @@
 import {createCustomer} from './mini-customer.js';
 import {createAdmin} from './mini-admin.js';
+import {extendManagement} from './management-ui.js';
 
 const $=selector=>document.querySelector(selector);
 const e=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -73,6 +74,10 @@ async function start(){
  $('#role-label').textContent=state.role==='admin'?'مرکز مدیریت':'همراه اتصال تو';
  try{
   state.context=await c('/context');
+  document.title=state.context.name+' · مینی‌اپ';
+  $('#brand-name').textContent=state.context.name;
+  if(state.context.logo_url)$('#brand-logo').innerHTML='<img src="/brand/logo" alt="لوگوی فروشگاه" width="34" height="34">';
+  $('#gate .eyebrow').textContent=state.context.name;
   const raw=tg()?.initData;
   let auth;
   if(raw){auth=await rpc('/mini-api/auth',{init_data:raw,role:state.role});}
@@ -87,6 +92,10 @@ async function start(){
 async function enter(auth){
  Object.assign(state,{csrf:auth.csrf,token:auth.session_token||''});
  controller=state.role==='admin'?createAdmin(ui):createCustomer(ui);
+ if(state.role==='admin')extendManagement(controller,ui);
+ if(state.role==='admin'&&state.context.license_issuer){
+  const {extendOwner}=await import('/owner-assets/licenses.js');extendOwner(controller,ui);
+ }
  if(state.role==='customer'){state.me=await c('/me');$('#profile-button').textContent=state.me.user.name.slice(0,1);}
  else{state.meta=await a('/meta');$('#profile-button').textContent='A';}
  $('#bottom-nav').innerHTML=controller.nav.map(([page,label,ic])=>`<a href="#${page}" data-page="${page}">${icon(ic)}<span>${label}</span></a>`).join('');

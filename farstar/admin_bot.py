@@ -40,6 +40,8 @@ class AdminBot:
     def __init__(self, store, provisioner, bot, send):
         self.store, self.db, self.settings = store, store.db, store.settings
         self.provisioner, self.bot, self.send = provisioner, bot, send
+        from .management import Management
+        self.management = Management(self)
 
     def admin(self, actor):
         if actor not in self.settings.admin_ids:
@@ -75,6 +77,10 @@ class AdminBot:
                 [('💽 فضای سرور', 'adm:storage'), ('💾 پشتیبان ربات', 'adm:backup')],
                 [('⌂ منوی مشتری', 'menu:home')]]
         markup = keys(rows)
+        markup.inline_keyboard.insert(-1, [InlineKeyboardButton(text='🎨 نام، متن و لوگو', callback_data='adm:branding'),
+                                          InlineKeyboardButton(text='🔑 لایسنس نصب', callback_data='adm:licenseinfo')])
+        if getattr(self.store, 'license_authority', None):
+            markup.inline_keyboard.insert(-1, [InlineKeyboardButton(text='🔐 مدیریت لایسنس‌های نصب', callback_data='licadm:list:0')])
         if self.settings.admin_mini_app_url:
             markup.inline_keyboard.insert(0, [InlineKeyboardButton(text='⚙️ مینی‌اپ مدیریت',
                                                   web_app=WebAppInfo(url=self.settings.admin_mini_app_url))])
@@ -128,6 +134,8 @@ class AdminBot:
     async def callback(self, query):
         actor = query.from_user.id
         self.admin(actor)
+        if await self.management.callback(actor, query.data or ''):
+            return
         parts = (query.data or '').split(':')
         action = parts[1]
         if action == 'home':
@@ -283,7 +291,7 @@ class AdminBot:
         elif action == 'servers':
             rows = self.db.all('SELECT id,name,active,inbound_id FROM servers ORDER BY id')
             await self.send(actor, '🌐 سرورها · برای بررسی اتصال انتخاب کن.', keys([
-                [(f"{'🟢' if s['active'] else '⚪'} {s['name']} · #{s['inbound_id']}", f"adm:servertest:{s['id']}")] for s in rows] + [BACK]))
+                [(f"{'🟢' if s['active'] else '⚪'} {s['name']} · #{s['inbound_id']}", f"adm:servertest:{s['id']}")] for s in rows] + [[('➕ افزودن پنل ثنایی', 'adm:newserver')], BACK]))
         elif action == 'servertest':
             server = self.store.server(int(parts[2]))
             if self.settings.demo:
@@ -411,6 +419,8 @@ class AdminBot:
             raise DomainError('دکمه مدیریت معتبر نیست.')
 
     async def message(self, message):
+        if await self.management.message(message):
+            return True
         actor = message.from_user.id
         user = self.store.user(actor)
         if not user or not user['state'].startswith('admin:'):
