@@ -87,23 +87,35 @@ async def memory_maintenance(state,interval=60,threshold=256*1024**2):
     while True:
         await asyncio.sleep(interval)
         before=rss_bytes()
+        if before is not None and before<threshold:
+            state['high_memory_samples']=0
         if before is not None and before>=threshold:
             state['memory_objects_collected']=await asyncio.to_thread(collect_unused_memory)
             after=rss_bytes()
             state['memory_released_bytes']=max(0,before-(after or before))
             state['memory_maintenance_at']=int(time.time())
+            state['high_memory_samples']=state.get('high_memory_samples',0)+1 if after and after>=384*1024**2 else 0
+            if state['high_memory_samples']>=2:
+                state['memory_recovery_required']=True
+                return
 
 
-async def runtime_watchdog(tasks,state,interval=10):
+async def runtime_watchdog(tasks,state,interval=10,clock=time.monotonic):
     """Runs on the app loop: a frozen loop cannot falsely report itself healthy."""
     notify_systemd('READY=1\nSTATUS=Farstar HTTP and background tasks started')
-    expected=time.monotonic()+interval
+    expected=clock()+interval
     while True:
         await asyncio.sleep(interval)
-        state['event_loop_lag_seconds']=round(max(0,time.monotonic()-expected),3)
+        state['event_loop_lag_seconds']=round(max(0,clock()-expected),3)
         state['runtime_heartbeat']=int(time.time())
         state['rss_bytes']=rss_bytes()
-        expected=time.monotonic()+interval
+        expected=clock()+interval
+        if state.get('memory_recovery_required') or state['event_loop_lag_seconds']>30:
+            state['background_tasks_ok']=False
+            reason='memory_pressure' if state.get('memory_recovery_required') else 'event_loop_stall'
+            log.error('Controlled recovery requested reason=%s',reason)
+            notify_systemd('WATCHDOG=trigger\nSTATUS=Controlled recovery: '+reason)
+            return
         stopped=[task.get_name() for task in tasks if task.done()]
         state['background_tasks_ok']=not stopped
         if stopped:

@@ -156,3 +156,37 @@ async def test_unused_native_heap_is_reclaimed_off_event_loop_when_above_thresho
         await task
     assert state['memory_objects_collected']==123
     assert state['memory_released_bytes']==120*1024**2
+
+
+async def test_partial_loop_stall_requests_recovery_even_if_loop_resumes(monkeypatch):
+    calls=[]
+    monkeypatch.setattr('farstar.runtime.notify_systemd',lambda msg:calls.append(msg))
+    values=iter([0,40,40])
+    state={}
+    await asyncio.wait_for(runtime_watchdog([],state,interval=0.002,clock=lambda:next(values)),1)
+    assert state['background_tasks_ok'] is False
+    assert calls[-1].startswith('WATCHDOG=trigger')
+
+
+async def test_sustained_high_memory_after_reclamation_requests_recovery(monkeypatch):
+    from farstar.runtime import memory_maintenance
+    monkeypatch.setattr('farstar.runtime.rss_bytes',lambda:400*1024**2)
+    monkeypatch.setattr('farstar.runtime.collect_unused_memory',lambda:0)
+    state={}
+    await asyncio.wait_for(memory_maintenance(state,interval=0.002),1)
+    assert state['high_memory_samples']==2 and state['memory_recovery_required'] is True
+
+
+async def test_recovered_memory_resets_pressure_streak(monkeypatch):
+    from farstar.runtime import memory_maintenance
+    monkeypatch.setattr('farstar.runtime.rss_bytes',lambda:128*1024**2)
+    state={'high_memory_samples':1}
+    task=asyncio.create_task(memory_maintenance(state,interval=0.002))
+    for _ in range(30):
+        if state['high_memory_samples']==0:
+            break
+        await asyncio.sleep(0.005)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert state['high_memory_samples']==0 and not state.get('memory_recovery_required')
