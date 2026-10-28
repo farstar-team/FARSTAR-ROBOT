@@ -1,5 +1,13 @@
 # Verification — 2026-10-26
 
+## Version 1.3.0 — 2026-10-28
+
+- **103 tests passed**; Ruff and JavaScript syntax checks passed. Existing purchase, exact-price receipt approval, idempotent provisioning, branded QR and runtime recovery tests remain included.
+- Receipt uploads use a route-specific in-memory multipart parser under a single processing semaphore. Actual streamed bytes are capped at 6 MiB, photo bytes at 5 MiB, with one file and three form fields; duplicate fields and excess parts are rejected. A 2 MiB receipt test fails if any disk spill is attempted. A chunked oversized-body test confirms partially parsed memory files are closed on rejection. Successful request identifiers and all accounting history remain intact.
+- New coverage verifies private service labels without modifying panel identity or quota, role/CSRF guards on new routes, owner checks, Tehran-midnight sales periods, graduated deduplicated alerts and suppression after renewal, receipt progress, and native admin navigation.
+- Local isolated UI verification covered direct receipt links, the persistent submit button, image selection/preview, service diagnostics, and switching sales reports from 7 to 30 days. Sample card and receipt were test data; no Telegram message or real payment was sent by these UI checks.
+- New database objects are additive: preference, label and alert-state tables, plus nullable receipt review time. Existing financial rows and panel identities are preserved. Existing memory reclamation and systemd watchdog settings remain in force.
+
 ## Version 1.2.1 — 2026-10-28
 
 - **87 tests passed**, including actual polling/delivery telemetry, safe error reporting and recovery, user-specific send failures, stopped-task health failures, watchdog heartbeat suppression on task death, optional-menu failure isolation, bounded Telegram concurrency, TLS verification/reuse, one inbound scan per monitoring cycle and native-heap maintenance. Sustained memory pressure after two reclamation attempts and severe partial loop stalls explicitly request recovery before the process can remain silently degraded. Normal memory readings reset the pressure streak.

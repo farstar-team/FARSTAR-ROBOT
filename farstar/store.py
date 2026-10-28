@@ -107,6 +107,36 @@ class Store:
     def user(self, user_id):
         return self.db.one("SELECT * FROM users WHERE id=?", (user_id,))
 
+    def notification_preferences(self, user_id):
+        row = self.db.one('SELECT expiry_alerts,quota_alerts FROM user_preferences WHERE user_id=?', (user_id,))
+        return {key: bool(row[key]) if row else True for key in ('expiry_alerts', 'quota_alerts')}
+
+    def save_notification_preferences(self, user_id, values):
+        if not values or set(values) - {'expiry_alerts', 'quota_alerts'} or any(type(v) is not bool for v in values.values()):
+            raise DomainError('تنظیم اعلان معتبر نیست.')
+        with self.db.transaction() as con:
+            con.execute('INSERT OR IGNORE INTO user_preferences(user_id) VALUES (?)', (user_id,))
+            con.execute('UPDATE user_preferences SET ' + ','.join(k + '=?' for k in values) + ' WHERE user_id=?',
+                        (*values.values(), user_id))
+        return self.notification_preferences(user_id)
+
+    def owned_service(self, service_id, user_id):
+        row = self.db.one("SELECT v.*,COALESCE(l.label,'') label FROM services v LEFT JOIN service_labels l "
+                          'ON l.service_id=v.id WHERE v.id=? AND v.user_id=?', (service_id, user_id))
+        if not row:
+            raise DomainError('سرویس پیدا نشد.')
+        return row
+
+    def rename_service(self, service_id, user_id, label):
+        label = label.strip()
+        if len(label) > 40 or any(ord(c) < 32 or c in '\u202a\u202b\u202d\u202e\u202c\u2066\u2067\u2068\u2069' for c in label):
+            raise DomainError('نام دلخواه حداکثر ۴۰ نویسه و در یک خط باشد.')
+        with self.db.transaction() as con:
+            if not con.execute('SELECT 1 FROM services WHERE id=? AND user_id=?', (service_id, user_id)).fetchone():
+                raise DomainError('سرویس پیدا نشد.')
+            con.execute('INSERT OR REPLACE INTO service_labels VALUES (?,?)', (service_id, label))
+        return label
+
     def set_state(self, user_id, state="", data=None):
         with self.db.transaction() as con:
             con.execute("UPDATE users SET state=?,state_data=? WHERE id=?",
@@ -398,7 +428,7 @@ class Store:
                 con.execute("UPDATE orders SET status='pending',expires_at=?,payment_method=NULL WHERE id=? AND status='awaiting_review'",
                             (now()+1800,row['order_id']))
             status = "approved" if approve else "rejected"
-            con.execute("UPDATE receipts SET status=?,reviewed_by=? WHERE id=?", (status, str(actor), receipt_id))
+            con.execute("UPDATE receipts SET status=?,reviewed_by=?,reviewed_at=? WHERE id=?", (status, str(actor), now(), receipt_id))
             notify(con, row["user_id"], "✅ پرداخت تأیید شد؛ اشتراک همراه لینک و QR همین‌جا برایت ارسال می‌شود." if approve else
                    "رسید تأیید نشد. از سفارش‌های من می‌توانی رسید درست را دوباره ارسال کنی یا به پشتیبانی پیام بدهی.", "receipt-result:" + receipt_id)
             audit(con, actor, "receipt." + status, receipt_id)

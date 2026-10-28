@@ -22,7 +22,7 @@ def receipt_message(store,receipt_id):
     buttons=[]
     if row['status']=='pending':
         if row['order_id']:
-            buttons.append(InlineKeyboardButton(text='✅ تأیید و تحویل اشتراک',callback_data='adm:receiptapprove:'+receipt_id))
-        buttons.append(InlineKeyboardButton(text='❌ رد رسید',callback_data='adm:receiptreject:'+receipt_id))
+            buttons.append(InlineKeyboardButton(text='✅ تأیید و تحویل اشتراک',callback_data='adm:receiptapprove:'+receipt_id,style='success'))
+        buttons.append(InlineKeyboardButton(text='❌ رد رسید',callback_data='adm:receiptreject:'+receipt_id,style='danger'))
     markup=InlineKeyboardMarkup(inline_keyboard=[buttons] if buttons else [])
     return row,text,markup

@@ -3,6 +3,8 @@ import secrets
 import sqlite3
 import tempfile
 import contextlib
+import csv
+import io
 from html import escape
 from pathlib import Path
 
@@ -11,6 +13,7 @@ from aiogram.exceptions import TelegramAPIError
 
 from .store import DomainError, audit, now
 from .receipt_messages import receipt_message
+from .experience import attention, sales_report, storage_status
 
 
 def keys(rows):
@@ -48,12 +51,14 @@ class AdminBot:
         self.admin(actor)
         self.store.set_state(actor)
         rows = [[('📊 آمار فروش', 'adm:stats'), ('🛍 مدیریت پلن‌ها', 'adm:plans')],
+                [('🚦 نیازمند رسیدگی', 'adm:attention'), ('📈 گزارش فروش', 'adm:report:7')],
                 [('🧾 رسیدهای پرداخت', 'adm:receipts'), ('💬 تیکت‌ها', 'adm:tickets')],
                 [('👤 کاربران و کیف پول', 'adm:users'), ('📦 سفارش‌ها', 'adm:orders')],
                 [('🌐 سرورها', 'adm:servers'), ('📡 سرویس‌ها','adm:services')],
                 [('💳 شماره کارت', 'adm:card'), ('⚙️ تنظیمات فروشگاه','adm:settings')],
                 [('🎟 تخفیف و هدیه', 'adm:codes'), ('📣 پیام همگانی', 'adm:broadcast')],
-                [('💾 پشتیبان ربات', 'adm:backup'), ('⌂ منوی مشتری', 'menu:home')]]
+                [('💽 فضای سرور', 'adm:storage'), ('💾 پشتیبان ربات', 'adm:backup')],
+                [('⌂ منوی مشتری', 'menu:home')]]
         markup = keys(rows)
         if self.settings.admin_mini_app_url:
             markup.inline_keyboard.insert(0, [InlineKeyboardButton(text='⚙️ مینی‌اپ مدیریت',
@@ -112,6 +117,46 @@ class AdminBot:
         action = parts[1]
         if action == 'home':
             await self.home(actor)
+        elif action == 'attention':
+            report = attention(self.db)
+            c = report['counts']
+            rows = [[(f"🧾 {r['name'][:24]} · {r['amount']:,} · {(now()-r['created_at'])//60} دقیقه", 'adm:receipt:'+r['id'])]
+                    for r in report['receipts']]
+            rows += [[(f"📦 {r['name'][:24]} · {r['status']}", 'adm:order:'+r['id'])] for r in report['orders']]
+            rows += [[(f"💬 #{r['id']} · {r['subject'][:30]}", f"adm:ticket:{r['id']}")] for r in report['tickets']]
+            await self.send(actor, f"🚦 <b>نیازمند رسیدگی</b>\nرسید منتظر تأیید: {c['receipts']}\n"
+                            f"قدیمی‌ترین رسید: {report['oldest_receipt_minutes']} دقیقه\n"
+                            f"سفارش نیازمند بررسی: {c['orders']}\nتیکت بی‌پاسخ: {c['tickets']}\n"
+                            f"پیام تحویل‌نشده پس از تلاش‌ها: {c['undelivered']}\n\nموارد قدیمی‌تر اول نمایش داده می‌شوند.", keys(rows+[BACK]))
+        elif action in {'report','reportcsv'}:
+            days = int(parts[2]) if len(parts)>2 else 7
+            if days not in (1,7,30):
+                raise DomainError('بازه گزارش معتبر نیست.')
+            report = sales_report(self.db, days)
+            if action == 'reportcsv':
+                output = io.StringIO()
+                writer = csv.DictWriter(output, fieldnames=['day','amount','orders'])
+                writer.writeheader()
+                writer.writerows(report['chart'])
+                await self.bot.send_document(actor, BufferedInputFile(('\ufeff'+output.getvalue()).encode(), filename=f'farstar-sales-{days}d.csv'),
+                                             caption='گزارش فروش تحویل‌شده · روزهای تقویمی به وقت تهران')
+            else:
+                top = '\n'.join(f"• {escape(p['name'])}: {p['sales']} فروش · {p['amount']:,}" for p in report['top_plans']) or 'هنوز فروش موفقی در این بازه نیست.'
+                await self.send(actor, f"📈 <b>گزارش {'امروز' if days==1 else str(days)+' روز اخیر'}</b>\n"
+                                f"فروش تحویل‌شده: {report['revenue']:,} {self.settings.currency}\n"
+                                f"تعداد سفارش: {report['sales']} · خریدار: {report['buyers']}\n"
+                                f"سهم تمدید: {report['renewal_revenue']:,}\n\nپلن‌های پرفروش:\n{top}\n\nروزهای تقویمی به وقت تهران؛ فاکتور پرداخت‌نشده در فروش محاسبه نمی‌شود.", keys([
+                                    [('امروز','adm:report:1'),('۷ روز','adm:report:7'),('۳۰ روز','adm:report:30')],
+                                    [('📥 خروجی CSV',f'adm:reportcsv:{days}')], BACK]))
+        elif action == 'storage':
+            data = storage_status(self.db)
+            def mb(value):
+                return value / 1024**2
+            await self.send(actor, f"💽 <b>فضای سرور</b>\n\nفضای آزاد: {data['disk_free_bytes']/1024**3:.1f} گیگابایت\n"
+                            f"دیتابیس ربات: {mb(data['database_bytes']):.2f} مگابایت\n"
+                            f"بکاپ‌ها: {data['backup_count']} فایل · {mb(data['backup_bytes']):.2f} مگابایت\n"
+                            'عکس فیش روی دیسک: ۰ بایت\n\nعکس‌ها در تلگرام می‌مانند؛ فقط شناسه و سابقه مالی نگهداری می‌شود. '
+                            'آپلود عکس تا ۵ مگابایت و در حافظه موقت پردازش می‌شود. حداکثر ۱۴ بکاپ خودکار نگهداری می‌شود.', keys([BACK]))
         elif action == 'stats':
             s = self.store.stats()
             await self.send(actor, f"📊 <b>آمار فروشگاه</b>\nکاربران: {s['users']}\nسرویس فعال: {s['active_services']}\n"

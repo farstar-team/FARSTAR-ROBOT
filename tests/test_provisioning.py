@@ -129,4 +129,4 @@ async def test_expiry_quota_notifications_deduplicated(store, panel):
     worker.provisioner = Provisioner(store, panel)
     await worker.monitor()
     await worker.monitor()
-    assert store.db.one("SELECT COUNT(*) n FROM outbox WHERE dedupe LIKE 'quota:%'")["n"] == 1
+    assert store.db.one("SELECT COUNT(*) n FROM outbox WHERE dedupe LIKE 'service-notice:%'")["n"] == 1

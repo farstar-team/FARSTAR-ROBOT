@@ -25,6 +25,7 @@ from .runtime import TelegramTelemetry, runtime_watchdog, notify_systemd, memory
 from .security import digest, new_session, rate_limit
 from .services import Worker
 from .store import DomainError, Store, audit, now
+from .experience import attention, sales_report, storage_status
 
 STATIC = Path(__file__).parent / "static"
 
@@ -308,7 +309,7 @@ def create_app(settings, run_background=True):
 
     @app.get("/api/meta")
     def meta(auth: Auth):
-        return {"name": settings.app_name, "demo": settings.demo, "currency": settings.currency,
+        return {"name": settings.app_name, "version": __version__, "demo": settings.demo, "currency": settings.currency,
                 "telegram": state["telegram"], "telegram_error": state["telegram_error"],
                 'telegram_last_poll':state.get('telegram_last_poll'),'telegram_last_update':state.get('telegram_last_update'),
                 'telegram_last_send':state.get('telegram_last_send'),'telegram_messages_sent':state.get('telegram_messages_sent',0),
@@ -325,6 +326,20 @@ def create_app(settings, run_background=True):
     @app.get("/api/overview")
     def overview(auth: Auth):
         return store.stats()
+
+    @app.get('/api/attention')
+    def attention_center(auth: Auth):
+        return attention(db)
+
+    @app.get('/api/reports/sales')
+    def report_sales(auth: Auth, days: int = 7):
+        if days not in (1, 7, 30):
+            raise HTTPException(422, 'بازه گزارش ۱، ۷ یا ۳۰ روز باشد.')
+        return sales_report(db, days)
+
+    @app.get('/api/storage')
+    def storage(auth: Auth):
+        return storage_status(db)
 
     @app.get("/api/payment-settings")
     def payment_settings(auth: Auth):

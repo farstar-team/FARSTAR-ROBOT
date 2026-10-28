@@ -51,19 +51,20 @@ const empty=(text,sub='',ic='bag',buttons='')=>`<section class="card empty">${ic
 const metric=(name,value,small,ic)=>`<article class="metric"><div class="metric-top">${name}${icon(ic)}</div><div class="metric-value">${n(value)}<small>${small}</small></div></article>`;
 const nav=key=>{location.hash=key;};
 function sheet(name,html,submit=null,label='تأیید'){
+ if(state.receiptPreview){URL.revokeObjectURL(state.receiptPreview);state.receiptPreview=null;}
  if(state.orderPoll){clearInterval(state.orderPoll);state.orderPoll=null;}
  $('#sheet-title').textContent=name;
  $('#sheet-content').innerHTML=submit?`<form id="sheet-form">${html}<div class="form-error" id="sheet-error" role="alert"></div><div class="form-actions">${action('close','انصراف','','button bare')}<button class="button" type="submit">${label}</button></div></form>`:html;
  state.sheetSubmit=submit;
  if(!$('#sheet').open)$('#sheet').showModal();
 }
-function close(){if(state.orderPoll){clearInterval(state.orderPoll);state.orderPoll=null;}if($('#sheet').open)$('#sheet').close();state.sheetSubmit=null;if(state.blobURL){URL.revokeObjectURL(state.blobURL);state.blobURL=null;}}
+function close(){if(state.orderPoll){clearInterval(state.orderPoll);state.orderPoll=null;}if($('#sheet').open)$('#sheet').close();state.sheetSubmit=null;if(state.blobURL){URL.revokeObjectURL(state.blobURL);state.blobURL=null;}if(state.receiptPreview){URL.revokeObjectURL(state.receiptPreview);state.receiptPreview=null;}}
 const confirm=(name,text,fn,label='تأیید')=>sheet(name,`<p class="safe-text">${e(text)}</p>`,fn,label);
 async function render(){
  const id=++renderId,key=location.hash.slice(1)||'home';
  document.querySelectorAll('#bottom-nav a').forEach(el=>el.classList.toggle('active',el.dataset.page===key));
  $('#screen').innerHTML='<div class="loader"><span></span>در حال دریافت اطلاعات…</div>';
- try{const result=await (controller.views[key]||controller.views.home)();if(id===renderId)$('#screen').innerHTML=result;}
+ try{const result=await (key.startsWith('receipt-')?controller.views.orders:controller.views[key]||controller.views.home)();if(id===renderId){$('#screen').innerHTML=result;if(key.startsWith('receipt-')&&controller.actions['receipt-upload'])await controller.actions['receipt-upload']({id:key.slice(8)});}}
  catch(error){if(id===renderId)$('#screen').innerHTML=empty('اطلاعات دریافت نشد.',e(error.message),'activity',action('refresh','تلاش دوباره'));}
 }
 const ui={$,e,n,date,fullDate,icon,badge,labels,state,tg,unit,money,toast,api,rpc,c,a,action,title,field,select,check,empty,metric,nav,sheet,close,confirm,render};
@@ -117,5 +118,15 @@ document.addEventListener('submit',async event=>{
  }else if(controller?.forms[event.target.id]){event.preventDefault();const button=event.target.querySelector('[type=submit]');if(button)button.disabled=true;try{await controller.forms[event.target.id](event.target);}catch(error){toast(error.message,true);}finally{if(button)button.disabled=false;}}
 });
 $('#sheet').addEventListener('click',event=>{if(event.target===$('#sheet')){const rect=event.target.getBoundingClientRect();if(event.clientY<rect.top||event.clientY>rect.bottom||event.clientX<rect.left||event.clientX>rect.right)close();}});
+$('#sheet').addEventListener('close',close);
+document.addEventListener('change',event=>{
+ if(event.target.id!=='receipt-photo')return;
+ if(state.receiptPreview){URL.revokeObjectURL(state.receiptPreview);state.receiptPreview=null;}
+ const file=event.target.files?.[0],preview=$('#receipt-preview'),ready=$('#receipt-ready'),name=$('#receipt-file-name');
+ preview.hidden=true;ready.hidden=true;name.textContent='برای انتخاب عکس فیش اینجا بزن';
+ if(!file)return;
+ if(file.size>5*1024*1024||!['image/jpeg','image/png','image/webp'].includes(file.type)){event.target.value='';toast('عکس JPG، PNG یا WebP تا ۵ مگابایت انتخاب کن.',true);return;}
+ state.receiptPreview=URL.createObjectURL(file);preview.src=state.receiptPreview;preview.hidden=false;ready.hidden=false;name.textContent=file.name;
+});
 window.addEventListener('hashchange',()=>{if(controller){close();render();window.scrollTo({top:0,behavior:'instant'});}});
 if(document.readyState==='complete')start();else window.addEventListener('load',start,{once:true});

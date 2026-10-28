@@ -6,6 +6,7 @@ from urllib.parse import quote
 
 from .panel import Panel, PanelError
 from .store import DomainError, audit, credit, notify, now
+from .experience import housekeeping, queue_service_alert, service_alert_content
 
 log = logging.getLogger(__name__)
 GIB = 1024 ** 3
@@ -282,12 +283,13 @@ class Worker:
         self.last_sync = 0
         self.last_backup = 0
         self.last_tick = 0
+        self.last_cleanup = 0
 
     async def deliver(self):
         if not self.bot:
             return
         from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
-        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CopyTextButton
         from aiogram.types import BufferedInputFile
         from .qr import subscription_card
         from .receipt_messages import receipt_message
@@ -299,6 +301,19 @@ class Worker:
                 if row['user_id'] in self.store.settings.admin_ids:
                     buttons.insert(0,[InlineKeyboardButton(text='⚙️ مدیریت ربات',callback_data='adm:home')])
                 markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+                if row['dedupe'].startswith('service-notice:'):
+                    _, sid, expiry, total, level = row['dedupe'].split(':')
+                    service = self.db.one('SELECT * FROM services WHERE id=?', (sid,))
+                    current_level, current_body = service_alert_content(self.store, service) if service else (0, '')
+                    if (not service or service['expires_at'] != int(expiry) or service['total_bytes'] != int(total)
+                            or not current_level or not service['enabled']):
+                        with self.db.transaction() as con:
+                            con.execute("UPDATE outbox SET sent_at=?,last_error='superseded' WHERE id=?", (now(), row['id']))
+                        continue
+                    row['body'] = current_body
+                    markup.inline_keyboard.insert(0, [InlineKeyboardButton(text='♻️ تمدید همین اشتراک', callback_data='renew:'+sid, style='success')])
+                    markup.inline_keyboard.insert(1, [InlineKeyboardButton(text='📡 جزئیات سرویس',callback_data='svc:'+sid),
+                                                      InlineKeyboardButton(text='🔔 تنظیم هشدارها',callback_data='preferences')])
                 if row['dedupe'].startswith('admin:') and ':receipt:' in row['dedupe']:
                     receipt,caption,markup=receipt_message(self.store,row['dedupe'].rsplit(':',1)[1])
                     await self.bot.send_photo(row['user_id'],receipt['file_id'],caption=caption,parse_mode='HTML',reply_markup=markup)
@@ -308,6 +323,8 @@ class Worker:
                     if not service:
                         raise DomainError('سرویس تحویل پیدا نشد.')
                     link=subscription(self.store.server(service['server_id']),service['sub_id'])
+                    if len(link) <= 256:
+                        markup.inline_keyboard.insert(0, [InlineKeyboardButton(text='📋 کپی لینک اتصال',copy_text=CopyTextButton(text=link),style='primary')])
                     card=await asyncio.to_thread(subscription_card,link,service)
                     caption=(f"✅ <b>{'تمدید' if order['kind']=='renew' else 'اشتراک'} آماده است</b>\n"
                              f"نام حساب: <code>{escape(service['email'])}</code>\n"
@@ -353,24 +370,15 @@ class Worker:
     async def monitor(self):
         # Bound each cycle; oldest snapshots first, so large installations rotate fairly.
         targets={}
-        for service in self.db.all("SELECT * FROM services WHERE enabled=1 ORDER BY COALESCE(synced_at,0) LIMIT 30"):
+        for service in self.db.all("SELECT v.*,COALESCE(l.label,'') label FROM services v LEFT JOIN service_labels l "
+                                   "ON l.service_id=v.id WHERE enabled=1 ORDER BY COALESCE(synced_at,0) LIMIT 30"):
             try:
                 server=self.store.server(service['server_id'])
                 if server.get('all_inbounds') and server['id'] not in targets:
                     async with self.provisioner.panel(server) as panel:
                         targets[server['id']]=await self.provisioner.target_inbounds(panel,server)
-                record = await self.provisioner.sync_service(service,targets.get(server['id']))
-                client = record["client"]
-                left = client["expiryTime"] // 1000 - now()
-                ratio = record.get("usedTraffic", 0) / client["totalGB"] if client["totalGB"] else 0
-                epoch = str(client["expiryTime"]) + ":" + str(client["totalGB"])
-                with self.db.transaction() as con:
-                    if 0 < left <= 3 * 86400:
-                        notify(con, service["user_id"], f"⏳ اعتبار سرویس {service['email']} کمتر از سه روز است. از «سرویس‌های من» تمدید کنید.",
-                               f"expiry:{service['id']}:{epoch}")
-                    if ratio >= 0.8:
-                        notify(con, service["user_id"], f"📊 بیش از ۸۰٪ حجم سرویس {service['email']} مصرف شده است.",
-                               f"quota:{service['id']}:{epoch}")
+                await self.provisioner.sync_service(service,targets.get(server['id']))
+                queue_service_alert(self.store, self.store.owned_service(service['id'], service['user_id']))
             except Exception:
                 log.warning("Service sync failed id=%s", service["id"])
 
@@ -395,7 +403,9 @@ class Worker:
                     self.last_backup = now()
                 with self.db.transaction() as con:
                     con.execute("UPDATE orders SET status='expired' WHERE status IN ('pending','checkout') AND expires_at<?", (now(),))
-                    con.execute("DELETE FROM rate_limits WHERE reset_at<?", (now() - 86400,))
+                if now() - self.last_cleanup >= 3600:
+                    await asyncio.to_thread(housekeeping, self.db)
+                    self.last_cleanup = now()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

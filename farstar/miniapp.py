@@ -6,15 +6,18 @@ import hashlib
 from typing import Annotated, Literal
 
 from aiogram.types import BufferedInputFile
-from fastapi import Depends, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
 
 from .happ import catalog, send_guide
+from .panel import PanelError
 from .security import digest, new_app_session, rate_limit, validate_telegram_init_data
 from .services import subscription
 from .store import DomainError, audit, now
+from .experience import order_progress, service_health
+from .uploads import receipt_form
 
 COOKIE = {'customer': 'farstar_customer', 'admin': 'farstar_admin'}
 
@@ -71,6 +74,15 @@ class GiftInput(Input):
 
 class GuideInput(Input):
     device: str = Field(max_length=20)
+
+
+class LabelInput(Input):
+    label: str = Field(max_length=40)
+
+
+class PreferencesInput(Input):
+    expiry_alerts: bool
+    quota_alerts: bool
 
 
 def mount_miniapps(app, store, worker, static):
@@ -166,6 +178,14 @@ def mount_miniapps(app, store, worker, static):
     def plans(auth: Customer):
         return store.plans()
 
+    @app.get('/mini-api/preferences')
+    def preferences(auth: Customer):
+        return store.notification_preferences(auth['user_id'])
+
+    @app.put('/mini-api/preferences')
+    def save_preferences(data: PreferencesInput, auth: Customer):
+        return store.save_notification_preferences(auth['user_id'], data.model_dump())
+
     @app.get('/mini-api/terms')
     def terms(auth: Customer):
         from .bot import TERMS
@@ -190,6 +210,7 @@ def mount_miniapps(app, store, worker, static):
     def order_view(row):
         result = {key: row[key] for key in ['id', 'price', 'currency', 'status', 'kind', 'created_at', 'expires_at', 'service_id']}
         result['plan'] = {key: json.loads(row['snapshot'])[key] for key in ['name', 'days', 'volume_gb']}
+        result['progress'] = order_progress(db, row)
         return result
 
     @app.post('/mini-api/orders')
@@ -225,22 +246,42 @@ def mount_miniapps(app, store, worker, static):
         return {'url': url}
 
     def owned(service_id, user_id):
-        service = db.one('SELECT * FROM services WHERE id=? AND user_id=?', (service_id, user_id))
-        if not service:
-            raise DomainError('سرویس پیدا نشد.')
-        return service
+        return store.owned_service(service_id, user_id)
 
     def service_view(service):
         result = {key: service[key] for key in ['id', 'plan_id', 'server_id', 'email', 'expires_at', 'total_bytes',
                   'used_bytes', 'enabled', 'is_trial', 'synced_at']}
         server = store.server(service['server_id'])
         result.update(server_name=server['name'], subscription=subscription(server, service['sub_id']))
+        result.update(label=service.get('label', ''), health=service_health(service))
         return result
 
     @app.get('/mini-api/services')
     def services(auth: Customer):
-        return [service_view(row) for row in db.all('SELECT * FROM services WHERE user_id=? ORDER BY created_at DESC',
+        return [service_view(row) for row in db.all("SELECT v.*,COALESCE(l.label,'') label FROM services v LEFT JOIN service_labels l "
+                                                  'ON l.service_id=v.id WHERE user_id=? ORDER BY created_at DESC',
                                                   (auth['user_id'],))]
+
+    @app.put('/mini-api/services/{service_id}/label')
+    def label(service_id: str, data: LabelInput, auth: Customer):
+        return {'label': store.rename_service(service_id, auth['user_id'], data.label)}
+
+    @app.post('/mini-api/services/{service_id}/diagnose')
+    async def diagnose(service_id: str, auth: Customer):
+        service = owned(service_id, auth['user_id'])
+        error = False
+        if not settings.demo:
+            if not rate_limit(db, f"mini-sync:{auth['user_id']}", 6, 60):
+                raise DomainError('برای بررسی دوباره کمی صبر کن.')
+            try:
+                await worker.provisioner.sync_service(service)
+            except (DomainError, PanelError):
+                error = True
+        result = service_health(owned(service_id, auth['user_id']))
+        result['panel_unavailable'] = error
+        if error:
+            result['fresh'] = False
+        return result
 
     @app.post('/mini-api/services/{service_id}/sync')
     async def sync(service_id: str, auth: Customer):
@@ -291,19 +332,18 @@ def mount_miniapps(app, store, worker, static):
             raise DomainError('تصویر رسید معتبر نیست؛ عکس JPG یا PNG بفرستید.') from exc
 
     @app.post('/mini-api/receipts')
-    async def receipt_upload(auth: Customer, amount: Annotated[int, Form(ge=10000, le=100000000)],
-                             request_id: Annotated[str, Form(min_length=8, max_length=80)],
-                             order_id: Annotated[str, Form(min_length=8, max_length=40)],
-                             photo: Annotated[UploadFile, File()]):
+    async def receipt_upload(request: Request, auth: Customer):
         if not settings.manual_payments or settings.currency != 'IRT' or not settings.card_number:
             raise DomainError('پرداخت کارت‌به‌کارت هنوز آماده نیست.')
         if settings.demo or not worker.bot:
             raise DomainError('ارسال رسید فقط در ربات متصل فعال است.')
-        raw = await photo.read(5 * 1024 * 1024 + 1)
-        await photo.close()
-        if len(raw) > 5 * 1024 * 1024:
-            raise DomainError('حجم تصویر حداکثر ۵ مگابایت است.')
+        if image_lock.locked():
+            raise HTTPException(429, 'یک فیش در حال پردازش است؛ چند ثانیه بعد دوباره بفرست.')
         async with image_lock:
+            async with receipt_form(request) as (fields, raw):
+                return await save_receipt(auth, fields.amount, fields.request_id, fields.order_id, raw)
+
+    async def save_receipt(auth, amount, request_id, order_id, raw):
             image = await asyncio.to_thread(normalize_image, raw)
             previous = db.one('SELECT * FROM upload_requests WHERE user_id=? AND request_id=?',
                               (auth['user_id'], request_id))

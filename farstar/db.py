@@ -113,6 +113,16 @@ CREATE TABLE IF NOT EXISTS audit (
 CREATE TABLE IF NOT EXISTS rate_limits (
  key TEXT PRIMARY KEY, hits INTEGER NOT NULL, reset_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS user_preferences (
+ user_id INTEGER PRIMARY KEY REFERENCES users(id),
+ expiry_alerts INTEGER NOT NULL DEFAULT 1, quota_alerts INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS service_labels (
+ service_id TEXT PRIMARY KEY REFERENCES services(id), label TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS service_alert_state (
+ service_id TEXT PRIMARY KEY REFERENCES services(id), epoch TEXT NOT NULL, level INTEGER NOT NULL
+);
 """
 
 
@@ -135,7 +145,7 @@ class Database:
             if 'all_inbounds' not in {r['name'] for r in con.execute('PRAGMA table_info(servers)')}:
                 con.execute('ALTER TABLE servers ADD COLUMN all_inbounds INTEGER NOT NULL DEFAULT 0')
             columns = {r['name'] for r in con.execute('PRAGMA table_info(receipts)')}
-            for name, definition in [('order_id','TEXT REFERENCES orders(id)'),('file_unique_id','TEXT'),('image_hash','TEXT')]:
+            for name, definition in [('order_id','TEXT REFERENCES orders(id)'),('file_unique_id','TEXT'),('image_hash','TEXT'),('reviewed_at','INTEGER')]:
                 if name not in columns:
                     con.execute(f'ALTER TABLE receipts ADD COLUMN {name} {definition}')
             con.execute("CREATE UNIQUE INDEX IF NOT EXISTS receipt_one_pending ON receipts(order_id) WHERE status='pending' AND order_id IS NOT NULL")

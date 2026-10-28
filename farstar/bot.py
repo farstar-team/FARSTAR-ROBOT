@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from aiogram import BaseMiddleware, Dispatcher, F, Router
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import (
-    BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup,
+    BufferedInputFile, CallbackQuery, CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup,
     ErrorEvent, LabeledPrice, LinkPreviewOptions, Message, PreCheckoutQuery, ReplyKeyboardRemove, WebAppInfo,
 )
 
@@ -19,6 +19,7 @@ from .security import rate_limit
 from .services import GIB, subscription
 from .qr import subscription_card
 from .store import DomainError, now
+from .experience import order_progress, service_health
 
 TERMS = (
     "📃 <b>قوانین خرید</b>\n\n"
@@ -34,7 +35,8 @@ TERMS = (
 
 def keyboard(rows):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=text, callback_data=data) for text, data in row] for row in rows
+        [InlineKeyboardButton(text=text, callback_data=data, style='success' if data.startswith('card:') else None)
+         for text, data in row] for row in rows
     ])
 
 
@@ -52,6 +54,7 @@ def build_dispatcher(store, provisioner, bot):
                 [('💳 کیف پول و پرداخت', 'menu:wallet'), ('📱 آموزش Happ', 'menu:help')],
                 [('🎁 دعوت دوستان', 'menu:referrals'), ('🧾 سفارش‌های من', 'menu:orders')],
                 [('💬 پشتیبانی', 'menu:support'), ('📃 قوانین', 'menu:terms')]]
+        rows.append([('🔔 تنظیم هشدارهای اشتراک', 'preferences')])
         if settings.trial_enabled:
             rows.insert(2, [('🧪 دریافت تست رایگان', 'menu:trial')])
         result = keyboard(rows)
@@ -157,19 +160,22 @@ def build_dispatcher(store, provisioner, bot):
                 f"حجم: {snap['volume_gb']} گیگابایت\nاعتبار: {snap['days']:g} روز\n"
                 f"مبلغ: <b>{money(order['price'])}</b>\nشماره: <code>{order['id']}</code>\n\n"
                 "با پرداخت، قوانین فروشگاه را تأیید می‌کنید. مهلت فاکتور ۳۰ دقیقه است.")
+        progress = order_progress(db, order)
+        body += '\n\n' + '\n'.join(('✅ ' if step['done'] else '▫️ ') + step['label'] for step in progress['steps'])
         if order["status"] in {'paid','processing','completed'}:
             status='✅ سفارش تحویل شد؛ لینک و QR را از سرویس‌های من ببین.' if order['status']=='completed' else '✅ سفارش در صف فعال‌سازی است.'
             await send(order["user_id"], body + '\n\n' + status)
             return
         if order['status']=='awaiting_review':
-            await send(order['user_id'],body+'\n\n🧾 رسید دریافت شد؛ پس از تأیید مدیر، اشتراک و QR مستقیم ارسال می‌شود.')
+            await send(order['user_id'],body+'\n\n🧾 رسید دریافت شد؛ پس از تأیید مدیر، اشتراک و QR مستقیم ارسال می‌شود.',
+                       keyboard([[('🔄 پیگیری وضعیت سفارش', 'order:'+order['id'])], [('💬 پشتیبانی','menu:support')]]))
             return
         if order['status']!='pending' or order['expires_at']<now():
             await send(order['user_id'],body+'\n\nاین فاکتور قابل پرداخت نیست؛ از وضعیت سفارش یا پشتیبانی پیگیری کن.')
             return
         rows = []
         if settings.manual_payments and settings.currency=='IRT':
-            rows.append([('💳 کارت‌به‌کارت و ارسال رسید','card:'+order['id'])])
+            rows.append([('📸 پرداخت و ارسال فیش بانکی','card:'+order['id'])])
         if store.user(order['user_id'])['balance'] >= order['price']:
             rows.append([("پرداخت با موجودی قبلی کیف پول", "wallet:" + order["id"])])
         if settings.currency == "XTR":
@@ -178,25 +184,24 @@ def build_dispatcher(store, provisioner, bot):
         await send(order["user_id"], body, keyboard(rows))
 
     async def show_services(user_id, offset=0):
-        rows = db.all("""SELECT v.*,s.name server_name FROM services v JOIN servers s ON s.id=v.server_id
+        rows = db.all("""SELECT v.*,s.name server_name,COALESCE(l.label,'') label FROM services v JOIN servers s ON s.id=v.server_id
+            LEFT JOIN service_labels l ON l.service_id=v.id
             WHERE v.user_id=? ORDER BY v.created_at DESC LIMIT 16 OFFSET ?""", (user_id, offset))
         if not rows:
             await send(user_id, "هنوز سرویسی نداری. از «خرید سرویس» یا «تست رایگان» شروع کن.")
             return
-        keys = [[(f"{'🟢' if v['enabled'] and v['expires_at'] > now() and v['used_bytes'] < v['total_bytes'] else '⚪'} {v['server_name']} · {v['email']}",
+        keys = [[(f"{'🟢' if v['enabled'] and v['expires_at'] > now() and v['used_bytes'] < v['total_bytes'] else '⚪'} {v['label'] or v['server_name']} · {v['email']}",
                   "svc:" + v["id"])] for v in rows[:15]]
         if len(rows) > 15:
             keys.append([("صفحه بعد ←", f"services:{offset + 15}")])
         await send(user_id, "📡 <b>سرویس‌های من</b>\nبرای دریافت لینک و مدیریت، سرویس را انتخاب کن.", keyboard(keys))
 
     def owned_service(service_id, user_id):
-        service = db.one("SELECT * FROM services WHERE id=? AND user_id=?", (service_id, user_id))
-        if not service:
-            raise DomainError("سرویس پیدا نشد.")
-        return service
+        return store.owned_service(service_id, user_id)
 
     async def show_service(service_id, user_id, sync=False):
         service = owned_service(service_id, user_id)
+        store.set_state(user_id)
         warning = ""
         if sync:
             try:
@@ -213,13 +218,26 @@ def build_dispatcher(store, provisioner, bot):
         synced = datetime.fromtimestamp(service["synced_at"] or service["created_at"], ZoneInfo("Asia/Tehran")).strftime("%m/%d %H:%M")
         link = subscription(server, service["sub_id"])
         rows = [[("🔄 بروزرسانی مصرف", "refresh:" + service_id), ("📱 QR اتصال", "qr:" + service_id)],
-                [("🔗 کانفیگ‌ها", "links:" + service_id)]]
+                [("🔗 کانفیگ‌ها", "links:" + service_id)],
+                [('🩺 بررسی مشکل اتصال', 'diagnose:'+service_id), ('✏️ نام دلخواه', 'rename:'+service_id)]]
         if not service["is_trial"]:
             rows.append([("♻️ تمدید و افزایش حجم", "renew:" + service_id)])
-        await send(user_id, f"📡 <b>{escape(server['name'])}</b>\n\n"
+        markup = keyboard(rows)
+        if len(link) <= 256:
+            markup.inline_keyboard.insert(0, [InlineKeyboardButton(text='📋 کپی لینک اشتراک', copy_text=CopyTextButton(text=link),style='primary')])
+        await send(user_id, f"📡 <b>{escape(service['label'] or server['name'])}</b> · <code>{escape(service['email'])}</code>\n\n"
                    f"وضعیت: {'فعال 🟢' if live else 'پایان اعتبار / غیرفعال ⚪'}\n"
                    f"مصرف: {used:.2f} از {total:g} گیگابایت\nباقی‌مانده زمان: {days} روز\n"
-                   f"پایان اعتبار: {date}\nآخرین همگام‌سازی: {synced}\n\n<code>{escape(link)}</code>{warning}", keyboard(rows))
+                   f"حجم باقی‌مانده: {max(0,total-used):.2f} گیگابایت\n"
+                   f"پایان اعتبار: {date}\nآخرین همگام‌سازی: {synced}\n\n<code>{escape(link)}</code>{warning}", markup)
+
+    async def preferences(user_id):
+        prefs = store.notification_preferences(user_id)
+        await send(user_id, '🔔 <b>هشدارهای اشتراک</b>\n\nهشدار زمان در ۷۲ و ۲۴ ساعت پایانی، هشدار حجم در مصرف ۸۰٪ و ۹۵٪ و پایان اعتبار ارسال می‌شود. '
+                   'هر مرحله فقط یک بار است؛ پیام‌های خرید و پشتیبانی همیشه ارسال می‌شوند.', keyboard([
+                       [(('✅' if prefs['expiry_alerts'] else '⚪')+' هشدار پایان زمان', 'preferences:expiry_alerts')],
+                       [(('✅' if prefs['quota_alerts'] else '⚪')+' هشدار پایان حجم', 'preferences:quota_alerts')],
+                       [('⌂ منوی اصلی','menu:home')]]))
 
     async def show_wallet(user_id):
         user = store.user(user_id)
@@ -342,10 +360,53 @@ def build_dispatcher(store, provisioner, bot):
                     raise DomainError('پرداخت کارت‌به‌کارت هنوز آماده نیست.')
                 order=store.receipt_order(parts[1],user_id)
                 store.set_state(user_id,'receipt_photo',{'order_id':order['id'],'amount':order['price']})
-                await send(user_id,f"💳 مبلغ دقیق <b>{money(order['price'])}</b> را واریز کن:\n"
+                markup = keyboard([[('↩ سفارش من','order:'+order['id'])]])
+                markup.inline_keyboard.insert(0, [InlineKeyboardButton(text='📋 کپی شماره کارت',copy_text=CopyTextButton(text=settings.card_number))])
+                if settings.mini_app_url:
+                    markup.inline_keyboard.insert(0, [InlineKeyboardButton(text='📸 انتخاب عکس و ارسال فیش بانکی',
+                        web_app=WebAppInfo(url=settings.mini_app_url+'#receipt-'+order['id']),style='success')])
+                await send(user_id,f"📸 <b>پرداخت و ارسال فیش بانکی</b>\n\n۱. مبلغ دقیق <b>{money(order['price'])}</b> را واریز کن:\n"
                            f"<code>{escape(settings.card_number)}</code>\nبه نام {escape(settings.card_holder)}\n"
-                           f"سفارش: <code>{order['id']}</code>\n\nعکس فیش را همین‌جا بفرست؛ پس از تأیید مدیر، اشتراک با لینک و QR مستقیم ارسال می‌شود.",
-                           keyboard([[('↩ سفارش من','order:'+order['id'])]]))
+                           f"سفارش: <code>{order['id']}</code>\n\n۲. دکمه سبز زیر را بزن و عکس فیش را انتخاب کن. "
+                           'همچنین می‌توانی از گیره 📎 تلگرام، عکس را همین‌جا بفرستی.\n\n'
+                           '۳. بعد از تأیید مدیر، اشتراک با لینک و QR مستقیم ارسال می‌شود.', markup)
+            elif action == 'preferences':
+                if len(parts) > 1:
+                    pref = parts[1]
+                    current = store.notification_preferences(user_id)
+                    if pref not in current:
+                        raise DomainError('تنظیم معتبر نیست.')
+                    store.save_notification_preferences(user_id, {pref: not current[pref]})
+                await preferences(user_id)
+            elif action == 'rename':
+                owned_service(parts[1], user_id)
+                store.set_state(user_id, 'service_label', {'service_id': parts[1]})
+                await send(user_id, '✏️ یک نام دلخواه مثل «گوشی من» یا «مغازه» بفرست (تا ۴۰ نویسه).\n'
+                           'نام اصلی FARSTAR و لینک اتصال حفظ می‌شود. برای حذف نام، یک خط تیره - بفرست.',
+                           keyboard([[('↩ سرویس من','svc:'+parts[1])]]))
+            elif action == 'diagnose':
+                service = owned_service(parts[1], user_id)
+                if not rate_limit(db, f'sync:{user_id}', 6, 60):
+                    raise DomainError('برای بررسی دوباره کمی صبر کن.')
+                unavailable = False
+                try:
+                    if not settings.demo:
+                        await provisioner.sync_service(service)
+                except (DomainError, PanelError):
+                    unavailable = True
+                result = service_health(owned_service(parts[1], user_id))
+                checks = '\n'.join(('✅ ' if c['ok'] else '❌ ') + c['label'] for c in result['checks'])
+                warning = '\n⚠️ پنل در دسترس نبود؛ این نتیجه بر اساس آخرین اطلاعات ذخیره‌شده است.' if unavailable or not result['fresh'] else ''
+                rows = [[('📱 راهنمای Happ','menu:help'), ('💬 گزارش مشکل','service-support:'+parts[1])],
+                        [('↩ سرویس من','svc:'+parts[1])]]
+                if not service['is_trial']:
+                    rows.insert(0, [('♻️ تمدید همین اشتراک','renew:'+parts[1])])
+                await send(user_id, f"🩺 <b>{escape(result['title'])}</b>\n\n{checks}\n\n{escape(result['advice'])}{warning}\n\n"
+                           + escape(result['note']), keyboard(rows))
+            elif action == 'service-support':
+                owned_service(parts[1], user_id)
+                store.set_state(user_id, 'ticket', {'service_id': parts[1]})
+                await send(user_id, '💬 مدل دستگاه، اینترنت مورد استفاده و خطای Happ را بنویس. مشخصات حساب خودکار به گزارش اضافه می‌شود.')
             elif action == "cancel-order":
                 store.cancel_order(parts[1], user_id)
                 await send(user_id, "فاکتور لغو شد و ظرفیت آن آزاد شد.")
@@ -472,9 +533,16 @@ def build_dispatcher(store, provisioner, bot):
                     store.set_state(user_id)
                     await send(user_id, f"🎉 {money(amount)} به کیف پول اضافه شد.")
                 elif state == "ticket" and text:
+                    if state_data.get('service_id'):
+                        service = owned_service(state_data['service_id'], user_id)
+                        text = f"سرویس: {service['email']}\n" + text
                     ticket_id = store.ticket(user_id, text[:3000], state_data.get("ticket_id"))
                     store.set_state(user_id)
                     await send(user_id, f"✅ تیکت #{ticket_id} ثبت شد؛ پاسخ در همین ربات می‌رسد.")
+                elif state == 'service_label' and text:
+                    store.rename_service(state_data['service_id'], user_id, '' if text.strip() == '-' else text)
+                    store.set_state(user_id)
+                    await show_service(state_data['service_id'], user_id)
                 elif state == "topup_amount" and text:
                     store.set_state(user_id)
                     await send(user_id,'پرداخت کارت‌به‌کارت مستقیم برای سفارش انجام می‌شود؛ اول پلن را انتخاب کن.')
