@@ -1,8 +1,30 @@
 """3x-ui v3.11 contract: global /clients endpoints, never mutate inbound settings."""
 from urllib.parse import quote, urlencode
 import re
+import os
+import ssl
+from functools import lru_cache
+from pathlib import Path
 
 import httpx
+import certifi
+
+
+@lru_cache(maxsize=1)
+def _shared_tls(cafile, capath, ca_revision):
+    # One CA store per process; a changed CA file creates a fresh verified context.
+    return ssl.create_default_context(cafile=cafile,capath=capath)
+
+
+def panel_tls():
+    cafile=os.environ.get('SSL_CERT_FILE')
+    capath=None
+    if not cafile:
+        capath=os.environ.get('SSL_CERT_DIR')
+        if not capath:
+            cafile=certifi.where()
+    stat=Path(cafile or capath).stat()
+    return _shared_tls(cafile,capath,(stat.st_mtime_ns,stat.st_size))
 
 
 class PanelError(Exception):
@@ -18,7 +40,7 @@ class Panel:
             headers["Authorization"] = "Bearer " + credentials["token"]
         self.http = httpx.AsyncClient(
             base_url=server["url"].rstrip("/") + "/", headers=headers,
-            timeout=httpx.Timeout(25, connect=10), verify=True, follow_redirects=False,
+            timeout=httpx.Timeout(25, connect=10), verify=panel_tls(), follow_redirects=False,
             transport=transport,
         )
         self.logged_in = bool(credentials.get("token"))

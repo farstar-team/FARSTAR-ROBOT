@@ -1,4 +1,5 @@
 import json
+import asyncio
 import logging
 from datetime import datetime
 from html import escape
@@ -366,7 +367,8 @@ def build_dispatcher(store, provisioner, bot):
             elif action == "qr":
                 service = owned_service(parts[1], user_id)
                 link = subscription(store.server(service["server_id"]), service["sub_id"])
-                await bot.send_photo(user_id, BufferedInputFile(subscription_card(link,service), filename=service['email']+'.png'),
+                card=await asyncio.to_thread(subscription_card,link,service)
+                await bot.send_photo(user_id, BufferedInputFile(card, filename=service['email']+'.png'),
                                      caption=f"📱 QR اختصاصی <code>{escape(service['email'])}</code>\n<code>{escape(link)}</code>")
             elif action == "links":
                 service = owned_service(parts[1], user_id)

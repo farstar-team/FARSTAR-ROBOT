@@ -53,10 +53,10 @@ class Provisioner:
             raise DomainError('اینباند فعال و سازگار برای این اشتراک پیدا نشد.')
         return ids
 
-    async def attach_missing(self, panel, server, record):
+    async def attach_missing(self, panel, server, record, inbound_ids=None):
         """Only add memberships for this verified identity; never detach or change quota."""
         if server.get('all_inbounds'):
-            required = await self.target_inbounds(panel, server)
+            required = inbound_ids if inbound_ids is not None else await self.target_inbounds(panel, server)
             missing = sorted(set(required) - set(record.get('inboundIds', [])))
             if missing:
                 await panel.attach(record['client']['email'], missing)
@@ -203,7 +203,7 @@ class Provisioner:
                               "sale:" + order["id"])
             audit(con, "worker", "order.complete", order["id"])
 
-    async def sync_service(self, service):
+    async def sync_service(self, service, inbound_ids=None):
         server = self.store.server(service["server_id"])
         async with self.panel(server) as panel:
             record = await panel.get_client(service["email"])
@@ -212,7 +212,7 @@ class Provisioner:
             client = record["client"]
             if client.get("subId") != service["sub_id"]:
                 raise DomainError("شناسه سرویس تغییر کرده است؛ پشتیبانی را مطلع کنید.")
-            record = await self.attach_missing(panel,server,record)
+            record = await self.attach_missing(panel,server,record,inbound_ids)
             client = record['client']
             if client.get('subId') != service['sub_id']:
                 raise DomainError('شناسه سرویس هنگام اتصال اینباند تغییر کرد؛ بررسی پشتیبانی لازم است.')
@@ -352,9 +352,14 @@ class Worker:
 
     async def monitor(self):
         # Bound each cycle; oldest snapshots first, so large installations rotate fairly.
+        targets={}
         for service in self.db.all("SELECT * FROM services WHERE enabled=1 ORDER BY COALESCE(synced_at,0) LIMIT 30"):
             try:
-                record = await self.provisioner.sync_service(service)
+                server=self.store.server(service['server_id'])
+                if server.get('all_inbounds') and server['id'] not in targets:
+                    async with self.provisioner.panel(server) as panel:
+                        targets[server['id']]=await self.provisioner.target_inbounds(panel,server)
+                record = await self.provisioner.sync_service(service,targets.get(server['id']))
                 client = record["client"]
                 left = client["expiryTime"] // 1000 - now()
                 ratio = record.get("usedTraffic", 0) / client["totalGB"] if client["totalGB"] else 0

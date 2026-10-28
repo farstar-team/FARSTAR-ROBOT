@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import csv
 import io
+import logging
 import secrets
 import sqlite3
 import tempfile
@@ -20,6 +21,7 @@ from .db import Database
 from . import __version__
 from .panel import PanelError
 from .miniapp import app_session, mount_miniapps
+from .runtime import TelegramTelemetry, runtime_watchdog, notify_systemd, memory_maintenance
 from .security import digest, new_session, rate_limit
 from .services import Worker
 from .store import DomainError, Store, audit, now
@@ -131,55 +133,66 @@ def create_app(settings, run_background=True):
     store = Store(db, settings)
     worker = Worker(store)
     bot = None
-    state = {"telegram": "disabled", "telegram_error": None}
+    state = {"telegram": "disabled", "telegram_error": None,'background_tasks_ok':True}
 
     async def run_bot():
         nonlocal bot
         from aiogram import Bot
         from aiogram.client.default import DefaultBotProperties
+        from aiogram.client.session.aiohttp import AiohttpSession
         from .bot import build_dispatcher
-        bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode="HTML"))
+        bot = Bot(settings.bot_token,session=AiohttpSession(timeout=20),default=DefaultBotProperties(parse_mode="HTML"))
+        bot.session.middleware(TelegramTelemetry(state))
         try:
             while True:
                 try:
-                    identity = await bot.get_me()
+                    identity = await bot.get_me(request_timeout=15)
                     settings.bot_username = identity.username or ''
                     dispatcher = build_dispatcher(store, worker.provisioner, bot)
                     # Keep queued updates. Never silently remove an existing webhook.
-                    webhook = await bot.get_webhook_info()
+                    webhook = await bot.get_webhook_info(request_timeout=15)
                     if webhook.url:
                         state["telegram"] = "webhook_conflict"
-                        return
+                        worker.bot=None
+                        await asyncio.sleep(30)
+                        continue
                     worker.bot = bot
-                    state["telegram"] = "connected"
+                    state["telegram"] = "connecting"
                     state["telegram_error"] = None
                     from aiogram.types import BotCommand
-                    await bot.set_my_commands([BotCommand(command=c, description=d) for c, d in [
-                        ("start", "منوی اصلی"), ("services", "سرویس‌های من"), ("support", "پشتیبانی"),
-                        ("paysupport", "پشتیبانی پرداخت"), ("help", "آموزش Happ"), ("terms", "قوانین"), ("cancel", "لغو عملیات"),
-                    ]])
-                    if settings.mini_app_url:
-                        from aiogram.types import MenuButtonWebApp, WebAppInfo, BotCommandScopeChat
-                        from aiogram.exceptions import TelegramAPIError
-                        await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text='فروشگاه من',web_app=WebAppInfo(url=settings.mini_app_url)))
-                        for admin_id in settings.admin_ids:
-                            try:
-                                await bot.set_my_commands([BotCommand(command='start',description='منوی مشتری'),
-                                    BotCommand(command='admin',description='مدیریت فروشگاه'),
-                                    BotCommand(command='help',description='آموزش Happ')],scope=BotCommandScopeChat(chat_id=admin_id))
-                                if settings.admin_mini_app_url:
-                                    await bot.set_chat_menu_button(chat_id=admin_id,menu_button=MenuButtonWebApp(
-                                        text='مدیریت',web_app=WebAppInfo(url=settings.admin_mini_app_url)))
-                            except TelegramAPIError:
-                                pass  # An administrator may not have started this bot yet.
-                    await dispatcher.start_polling(bot, handle_signals=False, close_bot_session=False)
+                    from aiogram.exceptions import TelegramAPIError
+                    async def configure_menus():
+                        await bot.set_my_commands([BotCommand(command=c,description=d) for c,d in [
+                            ('start','منوی اصلی'),('services','سرویس‌های من'),('support','پشتیبانی'),
+                            ('paysupport','پشتیبانی پرداخت'),('help','آموزش Happ'),('terms','قوانین'),('cancel','لغو عملیات')]])
+                        if settings.mini_app_url:
+                            from aiogram.types import MenuButtonWebApp,WebAppInfo,BotCommandScopeChat
+                            await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text='فروشگاه من',web_app=WebAppInfo(url=settings.mini_app_url)))
+                            for admin_id in settings.admin_ids:
+                                try:
+                                    await bot.set_my_commands([BotCommand(command='start',description='منوی مشتری'),
+                                        BotCommand(command='admin',description='مدیریت فروشگاه'),BotCommand(command='help',description='آموزش Happ')],
+                                        scope=BotCommandScopeChat(chat_id=admin_id))
+                                    if settings.admin_mini_app_url:
+                                        await bot.set_chat_menu_button(chat_id=admin_id,menu_button=MenuButtonWebApp(text='مدیریت',web_app=WebAppInfo(url=settings.admin_mini_app_url)))
+                                except TelegramAPIError:
+                                    pass
+                    try:
+                        await asyncio.wait_for(configure_menus(),timeout=20)
+                    except (TelegramAPIError,TimeoutError) as exc:
+                        logging.getLogger(__name__).warning('Optional Telegram menus failed type=%s',type(exc).__name__)
+                    await dispatcher.start_polling(bot,handle_signals=False,close_bot_session=False,
+                                                   polling_timeout=20,tasks_concurrency_limit=8)
+                    state.update(telegram='reconnecting',telegram_error='PollingStopped')
+                    worker.bot=None
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
                     state["telegram"] = "error"
                     state["telegram_error"] = type(exc).__name__
+                    logging.getLogger(__name__).warning('Telegram runner retry type=%s',type(exc).__name__)
                     worker.bot = None
-                await asyncio.sleep(30)
+                await asyncio.sleep(5)
         finally:
             if bot:
                 await bot.session.close()
@@ -188,19 +201,25 @@ def create_app(settings, run_background=True):
     async def lifespan(app):
         tasks = []
         if run_background:
-            tasks.append(asyncio.create_task(worker.run()))
+            tasks.append(asyncio.create_task(worker.run(),name='farstar-worker'))
+            tasks.append(asyncio.create_task(memory_maintenance(state),name='farstar-memory'))
             if settings.bot_token and not settings.demo:
-                tasks.append(asyncio.create_task(run_bot()))
-        yield
-        for task in tasks:
-            task.cancel()
-        for task in tasks:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+                tasks.append(asyncio.create_task(run_bot(),name='farstar-telegram'))
+        watchdog=asyncio.create_task(runtime_watchdog(tasks,state),name='farstar-watchdog') if run_background else None
+        try:
+            yield
+        finally:
+            notify_systemd('STOPPING=1')
+            for task in tasks + ([watchdog] if watchdog else []):
+                task.cancel()
+            for task in tasks + ([watchdog] if watchdog else []):
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
     app = FastAPI(title="Farstar VPN", version=__version__, lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store, app.state.worker = store, worker
+    app.state.runtime=state
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -253,7 +272,8 @@ def create_app(settings, run_background=True):
     @app.get("/health")
     def health():
         db.one("SELECT 1")
-        return {"status": "ok", "version": __version__}
+        payload={'status':'ok' if state['background_tasks_ok'] else 'degraded','version':__version__}
+        return JSONResponse(payload,status_code=200 if state['background_tasks_ok'] else 503)
 
     @app.post("/api/auth/login")
     async def login(data: Login, request: Request, response: Response):
@@ -290,6 +310,12 @@ def create_app(settings, run_background=True):
     def meta(auth: Auth):
         return {"name": settings.app_name, "demo": settings.demo, "currency": settings.currency,
                 "telegram": state["telegram"], "telegram_error": state["telegram_error"],
+                'telegram_last_poll':state.get('telegram_last_poll'),'telegram_last_update':state.get('telegram_last_update'),
+                'telegram_last_send':state.get('telegram_last_send'),'telegram_messages_sent':state.get('telegram_messages_sent',0),
+                'telegram_updates_received':state.get('telegram_updates_received',0),
+                'runtime_heartbeat':state.get('runtime_heartbeat'),'event_loop_lag_seconds':state.get('event_loop_lag_seconds'),
+                'rss_bytes':state.get('rss_bytes'),'background_tasks_ok':state['background_tasks_ok'],
+                'memory_released_bytes':state.get('memory_released_bytes'),'memory_maintenance_at':state.get('memory_maintenance_at'),
                 "bot_configured": bool(settings.bot_token), "worker_tick": worker.last_tick,
                 "manual_payments": settings.manual_payments, "trial_enabled": settings.trial_enabled,
                 "referral_percent": settings.referral_percent, "panel_version": "3.11.0",

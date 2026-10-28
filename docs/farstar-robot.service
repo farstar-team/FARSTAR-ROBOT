@@ -4,7 +4,12 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
+WatchdogSec=90s
+WatchdogSignal=SIGKILL
+LimitCORE=0
+TimeoutStartSec=60
 User=farstarbot
 Group=farstarbot
 WorkingDirectory=/opt/farstar-robot/current
