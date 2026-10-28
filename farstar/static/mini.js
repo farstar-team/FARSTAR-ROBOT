@@ -118,7 +118,7 @@ document.addEventListener('submit',async event=>{
  }else if(controller?.forms[event.target.id]){event.preventDefault();const button=event.target.querySelector('[type=submit]');if(button)button.disabled=true;try{await controller.forms[event.target.id](event.target);}catch(error){toast(error.message,true);}finally{if(button)button.disabled=false;}}
 });
 $('#sheet').addEventListener('click',event=>{if(event.target===$('#sheet')){const rect=event.target.getBoundingClientRect();if(event.clientY<rect.top||event.clientY>rect.bottom||event.clientX<rect.left||event.clientX>rect.right)close();}});
-$('#sheet').addEventListener('close',close);
+$('#sheet').addEventListener('cancel',event=>{event.preventDefault();close();});
 document.addEventListener('change',event=>{
  if(event.target.id!=='receipt-photo')return;
  if(state.receiptPreview){URL.revokeObjectURL(state.receiptPreview);state.receiptPreview=null;}
