@@ -102,7 +102,7 @@ def archive_members(raw, release):
 def main():
     if os.geteuid() != 0:
         raise RuntimeError('با root اجرا کن.')
-    print('FARSTAR · نصب ربات فروش VPN\nمرجع دریافت لایسنس رایگان: @FARSTAR_VPN_BOT')
+    print('FARSTAR · نصب ربات فروش VPN\nمرجع دریافت و تمدید لایسنس: @FARSTAR_VPN_BOT')
     # This is deliberately the first question, before installing packages or changing the host.
     license_key = ask('لایسنس شخصی', secret=True, validate=lambda v: bool(re.fullmatch(r'FS-[A-Za-z0-9_-]{30,60}', v)))
     verified = request(ISSUER + '/check', {'license_key': license_key})

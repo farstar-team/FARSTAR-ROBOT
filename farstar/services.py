@@ -291,6 +291,9 @@ class Worker:
     async def deliver(self):
         if not self.bot:
             return
+        issuer=getattr(self.store,'license_authority',None)
+        if issuer:
+            issuer.maintenance()
         from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
         from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CopyTextButton
         from aiogram.types import BufferedInputFile
@@ -305,6 +308,12 @@ class Worker:
                 if row['user_id'] in self.store.settings.admin_ids:
                     buttons.insert(0,[InlineKeyboardButton(text='⚙️ مدیریت ربات',callback_data='adm:home')])
                 markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+                if issuer and row['dedupe'].startswith('license-'):
+                    await issuer.deliver_outbox(self.bot,row)
+                    with self.db.transaction() as con:
+                        con.execute('UPDATE outbox SET sent_at=? WHERE id=?',(now(),row['id']))
+                    await asyncio.sleep(0.06)
+                    continue
                 if row['dedupe'].startswith('service-notice:'):
                     _, sid, expiry, total, level = row['dedupe'].split(':')
                     service = self.db.one('SELECT * FROM services WHERE id=?', (sid,))

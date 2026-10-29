@@ -80,7 +80,7 @@ class AdminBot:
         markup.inline_keyboard.insert(-1, [InlineKeyboardButton(text='🎨 نام، متن و لوگو', callback_data='adm:branding'),
                                           InlineKeyboardButton(text='🔑 لایسنس نصب', callback_data='adm:licenseinfo')])
         if getattr(self.store, 'license_authority', None):
-            markup.inline_keyboard.insert(-1, [InlineKeyboardButton(text='🔐 مدیریت لایسنس‌های نصب', callback_data='licadm:list:0')])
+            markup.inline_keyboard.insert(-1, [InlineKeyboardButton(text='🔐 مدیریت تجاری لایسنس', callback_data='licadm:desk')])
         if self.settings.admin_mini_app_url:
             markup.inline_keyboard.insert(0, [InlineKeyboardButton(text='⚙️ مینی‌اپ مدیریت',
                                                   web_app=WebAppInfo(url=self.settings.admin_mini_app_url))])

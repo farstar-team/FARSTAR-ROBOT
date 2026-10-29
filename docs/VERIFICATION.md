@@ -1,5 +1,11 @@
 # Verification — 2026-10-26
 
+## Version 1.5.0 — license commerce
+
+The owner's private issuer adds independent license plans, prices, free-campaign policy, invoice snapshots, coupon/capacity reservations, receipt review, durable delivery, manual grants, refund records, search, CSV and audit views. Customer installations contain only optional integration hooks; no issuer commerce implementation or signing key is distributed.
+
+Private tests cover concurrent free-capacity limits, unchanged existing entitlements when free issuance stops, price/period preservation, repeated approval, stable renewal identities, rejected and duplicate receipts, sales pause with retained pending review, coupon reservations, grants/refund idempotency, role/CSRF checks, expiry reminder suppression after renewal, and actual native dispatcher receipt-to-delivery behavior. No real bank payment or production license sale is created by these tests.
+
 ## Version 1.3.1 — 2026-10-28
 
 - **116 tests passed**, with Ruff passing. New tests cover deduplicated legacy contacts without creating user accounts or changing wallets, validation before writes, retained administrator bans, idempotent campaign confirmation, stale-preview rejection, role checks, delivery progress and priority for transactional messages during a broadcast.

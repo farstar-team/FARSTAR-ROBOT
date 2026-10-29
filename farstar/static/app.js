@@ -122,7 +122,7 @@ async function render(){
 function modal(title,html){$('#modal-title').textContent=title;$('#modal-body').innerHTML=html;if(!$('#modal').open)$('#modal').showModal();}
 function form(title,body,save,label='ذخیره تغییرات'){
  modal(title,`<form id="entity-form">${body}<div id="form-error" class="error" role="alert"></div><div class="form-actions"><button type="button" class="secondary" data-action="modal-close">انصراف</button><button class="primary" type="submit">${label}</button></div></form>`);
- $('#entity-form').addEventListener('submit',async ev=>{ev.preventDefault();const b=ev.target.querySelector('[type=submit]');b.disabled=true;$('#form-error').textContent='';try{await save(Object.fromEntries(new FormData(ev.target)),ev.target);$('#modal').close();toast('با موفقیت ذخیره شد.');await render();}catch(err){$('#form-error').textContent=err.message;}finally{b.disabled=false;}});
+ $('#entity-form').addEventListener('submit',async ev=>{ev.preventDefault();const b=ev.target.querySelector('[type=submit]');b.disabled=true;$('#form-error').textContent='';try{await save(Object.fromEntries(new FormData(ev.target)),ev.target);if($('#entity-form')===ev.target){$('#modal').close();toast('با موفقیت ذخیره شد.');await render();}}catch(err){$('#form-error').textContent=err.message;}finally{b.disabled=false;}});
 }
 const field=(label,name,value='',type='text',extra='')=>`<label>${label}<input type="${type}" name="${name}" value="${e(value)}" ${extra}></label>`;
 const check=(label,name,checked=true)=>`<label class="check"><input type="checkbox" name="${name}" ${checked?'checked':''}>${label}</label>`;

@@ -46,6 +46,8 @@ def build_dispatcher(store, provisioner, bot):
     dp = Dispatcher()
     db, settings = store.db, store.settings
     brand = branding(store)
+    if getattr(store,'license_authority',None):
+        store.license_authority.bot=bot
 
     def terms():
         return escape(brand.text('terms')) if brand.text('terms') else TERMS
@@ -71,7 +73,7 @@ def build_dispatcher(store, provisioner, bot):
                 result.inline_keyboard.append([InlineKeyboardButton(text='🧩 مینی‌اپ مدیر',
                                                 web_app=WebAppInfo(url=settings.admin_mini_app_url))])
         if getattr(store, 'license_authority', None):
-            result.inline_keyboard.append([InlineKeyboardButton(text='🚀 ربات خودت را بساز · لایسنس رایگان', callback_data='license:home')])
+            result.inline_keyboard.append([InlineKeyboardButton(text=store.license_authority.entry_label(), callback_data='license:home')])
         return result
 
     async def send(chat_id, text, reply_markup=None):
@@ -491,6 +493,9 @@ def build_dispatcher(store, provisioner, bot):
         try:
             if command in {"/start", "/cancel"}:
                 await home(user_id)
+                return
+            issuer=getattr(store,'license_authority',None)
+            if issuer and await issuer.message(message,bot,send):
                 return
             if command == "/terms":
                 await send(user_id, terms(), keyboard([[('قوانین را می‌پذیرم ✓', 'terms:accept')]]))
