@@ -73,6 +73,7 @@ def test_signed_lease_cannot_move_or_change_expiry(store, signer):
     lease['payload']['expires_at'] += 999999
     save_lease(store, lease)
     assert not licensing.client(store).status()['can_sell']
+
     lease = signer({**payload(store), 'installation_id': 'b'*32})
     save_lease(store, lease)
     assert not licensing.client(store).status()['can_sell']
@@ -81,6 +82,16 @@ def test_signed_lease_cannot_move_or_change_expiry(store, signer):
     assert not licensing.client(store).status()['can_sell']
     save_lease(store, signer({**payload(store), 'machine_hash': '0'*64}))
     assert not licensing.client(store).status()['can_sell']
+
+
+def test_product_scoped_leases_reject_addons_and_accept_existing_bot_keys(store, signer):
+    enable(store)
+    for product in ('atlas', 'zarib'):
+        save_lease(store, signer({**payload(store), 'product': product}))
+        assert not licensing.client(store).status()['can_sell']
+    for extra in ({}, {'product': 'robot'}):
+        save_lease(store, signer({**payload(store), **extra}))
+        assert licensing.client(store).status()['can_sell']
 
 
 async def test_outage_grace_is_bounded_and_revoke_is_signed(store, signer):

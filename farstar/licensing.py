@@ -39,7 +39,7 @@ def verify_envelope(envelope, installation_id, bot_id, timestamp=None):
         Ed25519PublicKey.from_public_bytes(bytes.fromhex(PUBLIC_KEY)).verify(
             base64.b64decode(envelope['signature'], validate=True), canonical(payload))
         stamp = now() if timestamp is None else timestamp
-        if (payload['installation_id'] != installation_id or payload['bot_id'] != bot_id
+        if (payload.get('product', 'robot') != 'robot' or payload['installation_id'] != installation_id or payload['bot_id'] != bot_id
                 or payload['machine_hash'] != machine_fingerprint()
                 or payload['issued_at'] > stamp + 300
                 or (payload['status'] == 'active' and (payload['issued_at'] > payload['lease_until']
@@ -79,7 +79,7 @@ class LicenseClient:
                 p = verify_envelope(json.loads(row['value']), self.settings.license_installation_id, self.bot_id)
                 stamp = now()
                 valid = p['status'] == 'active' and stamp <= min(p['grace_until'], p['expires_at'])
-                result.update(status=p['status'] if stamp <= p['expires_at'] else 'expired',
+                result.update(status=p['status'] if p['status'] == 'revoked' or stamp <= p['expires_at'] else 'expired',
                               can_sell=valid, expires_at=p['expires_at'],
                               lease_until=p['lease_until'], grace_until=p['grace_until'],
                               offline_grace=valid and stamp > p['lease_until'], license_id=p['license_id'])

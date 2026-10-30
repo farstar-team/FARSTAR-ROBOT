@@ -420,6 +420,10 @@ class Store:
                 if (not order or order['banned'] or order['status'] != 'pending' or order['expires_at'] < now()
                         or order['currency'] != 'IRT' or order['price'] != amount or amount <= 0):
                     raise DomainError('مبلغ یا وضعیت سفارش با رسید مطابقت ندارد؛ فاکتور را بررسی کنید.')
+                if getattr(self, 'license_authority', None) and con.execute(
+                        'SELECT 1 FROM license_receipt_claims WHERE file_unique_id=? OR image_hash=?',
+                        (file_unique_id, image_hash)).fetchone():
+                    raise DomainError('این تصویر قبلاً برای پرداخت لایسنس استفاده شده است.')
                 con.execute("INSERT INTO receipts(id,user_id,amount,file_id,created_at,order_id,file_unique_id,image_hash) VALUES (?,?,?,?,?,?,?,?)",
                             (receipt_id, user_id, amount, file_id, now(),order_id,file_unique_id or None,image_hash or None))
                 con.execute("UPDATE orders SET status='awaiting_review',payment_method='card' WHERE id=?",(order_id,))

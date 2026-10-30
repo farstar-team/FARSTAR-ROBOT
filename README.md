@@ -1,6 +1,6 @@
 # دریافت لایسنس و نصب یک‌دستوری
 
-**برای دریافت و تمدید لایسنس به [@FARSTAR_VPN_BOT](https://t.me/FARSTAR_VPN_BOT) بروید و آخرین دکمه «ربات خودت را بساز» را بزنید. شرایط کمپین رایگان و قیمت پلن‌ها داخل همان ربات نمایش داده می‌شود.**
+**برای دریافت و تمدید لایسنس به [@FARSTAR_VPN_BOT](https://t.me/FARSTAR_VPN_BOT) بروید و دکمهٔ «لایسنس ربات، ضریب و Atlas» را بزنید و محصول «ربات فروش FARSTAR» را انتخاب کنید. شرایط کمپین رایگان و قیمت پلن‌ها داخل همان ربات نمایش داده می‌شود.**
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/farstar-team/FARSTAR-ROBOT/main/install.sh)
