@@ -80,7 +80,7 @@ class LicenseClient:
                 stamp = now()
                 valid = p['status'] == 'active' and stamp <= min(p['grace_until'], p['expires_at'])
                 result.update(status=p['status'] if p['status'] == 'revoked' or stamp <= p['expires_at'] else 'expired',
-                              can_sell=valid, expires_at=p['expires_at'],
+                              can_sell=valid, permanent=bool(p.get('permanent')), expires_at=None if p.get('permanent') else p['expires_at'],
                               lease_until=p['lease_until'], grace_until=p['grace_until'],
                               offline_grace=valid and stamp > p['lease_until'], license_id=p['license_id'])
             except (DomainError, ValueError):
