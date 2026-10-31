@@ -17,7 +17,7 @@ ISSUER_URL = 'https://sub.mystics.top/license-api'
 ISSUER_BOT = 'FARSTAR_VPN_BOT'
 PUBLIC_KEY = '11fd735b8e7db7c4a76ea4fbc791a9c60739c7fdb7404b3493ee97548ba261ac'
 INSTALL_COMMAND = 'bash <(curl -fsSL https://raw.githubusercontent.com/farstar-team/FARSTAR-ROBOT/main/install.sh)'
-STATUS_LABELS = {'active':'فعال', 'pending':'منتظر اولین نصب', 'revoked':'غیرفعال شده', 'expired':'منقضی',
+STATUS_LABELS = {'deleted':'حذف شده', 'active':'فعال', 'pending':'منتظر اولین نصب', 'revoked':'غیرفعال شده', 'expired':'منقضی',
                  'issuer':'مرجع اصلی', 'development':'محیط توسعه', 'missing':'فعال نشده', 'invalid':'نامعتبر'}
 log = logging.getLogger(__name__)
 
